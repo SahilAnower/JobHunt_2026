@@ -1,0 +1,12 @@
+# Everything personal. If you ever put this on a remote, it must be a private one, and these
+# stay out of it regardless.
+jobhunt.db
+jobhunt.db.*
+config/profile.yaml
+config/seed.yaml
+config/boards.yaml
+outbox/
+digest/
+logs/
+__pycache__/
+*.pyc

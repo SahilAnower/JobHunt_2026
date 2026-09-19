@@ -1,0 +1,82 @@
+# ---------------------------------------------------------------------------------------------
+# seed.example.yaml — copy to seed.yaml and edit.
+#
+#     cp config/seed.example.yaml config/seed.yaml
+#
+# This file does two jobs:
+#
+#   1. Lists the specific reqs you already know about (`reqs:`). Those go straight into the
+#      store, so nothing you found by hand gets lost.
+#   2. Tells seed_boards.py which ATS each company runs on — derived from the URL shape, not by
+#      probing. `job-boards.greenhouse.io/cloudflare/jobs/123` *is* the Greenhouse slug
+#      `cloudflare`. Run `python3 seed_boards.py --write` after editing this file and the
+#      matching board is added to config/boards.yaml and polled every day from then on.
+#
+# So the single most useful thing you can do here is paste in one real job URL per company.
+# A company with no recognisable ATS URL is recorded as `own_site` and cannot be polled; those
+# come in by email alert instead (see EMAIL-ALERTS.md).
+#
+# URL shapes that are recognised:
+#   greenhouse        job-boards.greenhouse.io/<slug>/jobs/<id>
+#   ashby             jobs.ashbyhq.com/<Slug>/<uuid>          (slug is case-sensitive)
+#   lever             jobs.lever.co/<slug>/<uuid>
+#   workday           <tenant>.wd<N>.myworkdayjobs.com/<locale>/<site>/job/...
+#   smartrecruiters   jobs.smartrecruiters.com/<Slug>/<id>
+# Oracle Recruiting Cloud and bespoke boards cannot be derived from a URL; they are kept as
+# verified entries in seed_boards.py's KNOWN table instead.
+#
+# `status` is your own read, and it is worth writing honestly:
+#   has_reqs     you found live reqs, listed below
+#   no_openings  you looked and there was nothing in band
+#   no_url       you have no careers URL for them yet
+# "no good openings as of now" from someone who actually looked beats a scraper's silence, so
+# these notes are passed to the scorer.
+# ---------------------------------------------------------------------------------------------
+
+companies:
+  # A company on a pollable ATS. One URL is all it takes — every future req at this board
+  # arrives automatically after `seed_boards.py --write`.
+  - name: Cloudflare
+    status: has_reqs
+    reqs:
+      - url: https://job-boards.greenhouse.io/cloudflare/jobs/7831810
+
+  # Several reqs, with per-req notes. `note` is shown to the scorer and printed in the digest.
+  - name: Apple
+    status: has_reqs
+    reqs:
+      - url: https://jobs.apple.com/en-in/details/200675619-0321/software-development-engineer
+        note: en-in board, so an India seat.
+      - url: https://jobs.apple.com/en-us/details/200674285-1052/software-engineer-java
+        note: en-us board, so probably a US seat. Verify before spending effort.
+
+  # `req_hint` is for boards whose URL hides the real requisition id — it becomes the stable
+  # key, so the same req is not re-added under a new URL next week.
+  - name: Rubrik
+    status: has_reqs
+    reqs:
+      - url: https://www.rubrik.com/company/careers/departments/job.8050714.1929?reqId=INSW11113
+        req_hint: INSW11113
+
+  # `human_path` is the warm route in — a recruiter thread, a friend on the team, an alum. It
+  # is a scoring input, and a real one: a referral beats a marginally better cold req.
+  - name: Google
+    status: no_url
+    human_path: "Referral secured — ex-colleague on the Cloud team."
+    note: Long loop with a hiring committee. The constraint is req supply, not access.
+
+  - name: Microsoft
+    status: has_reqs
+    human_path: "A recruiter opened a LinkedIn thread about this req."
+    reqs:
+      # Unwrap LinkedIn safety redirects before pasting; the wrapper is not fetchable.
+      - url: https://apply.careers.microsoft.com/careers/job/1970393556937454
+
+  # Worth keeping even with nothing live. It records that you checked, and if the company is on
+  # a pollable board it will still be polled daily from boards.yaml.
+  - name: Databricks
+    status: no_openings
+
+  - name: Salesforce
+    status: no_openings
+    note: Your read — "nothing in band as of now".

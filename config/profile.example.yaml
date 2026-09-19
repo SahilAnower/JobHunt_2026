@@ -1,0 +1,256 @@
+# ---------------------------------------------------------------------------------------------
+# profile.example.yaml — copy to profile.yaml and edit. This is the only file with opinions
+# about you in it, and it is the one that decides what the digest shows you.
+#
+#     cp config/profile.example.yaml config/profile.yaml
+#
+# profile.yaml is gitignored. This example is not, so keep real details out of it.
+# Every key below is read by the code; deleting one will break a run.
+# ---------------------------------------------------------------------------------------------
+
+candidate:
+  name: Your Name
+  short_name: You              # used in draft salutations
+  email: you@example.com
+  phone: "+91 0000000000"
+  base_city: Hyderabad         # "home" geography — roles here need no relocation
+  country: India
+  links:
+    linkedin: https://www.linkedin.com/in/your-handle
+    github: https://github.com/your-handle
+    leetcode: 500+ problems solved
+
+# Pasted near-verbatim into the scoring and drafting prompts. Write it as prose, not bullets,
+# and be concrete: the scorer can only judge overlap it can actually see. Include your stack,
+# scale numbers, and the two or three projects you would talk about in a screen.
+resume_summary: |
+  Three years as a backend engineer. Java and Spring Boot against AWS — Lambda, DynamoDB,
+  S3, ECS, CDK. Shipped a multi-region service handling ~2k requests/second and cut p99
+  latency 40% by reworking the caching layer.
+
+  Recent work: an internal agentic tool using an LLM to triage support tickets, which
+  removed roughly 15 hours of manual work a week.
+
+  Gaps to be honest about: no production frontend work beyond small React changes, and no
+  Kubernetes ownership.
+
+roles:
+  # Free text. These three strings go straight into the prompt, so phrase them the way you
+  # would describe the job you want.
+  lane_a: Backend / distributed systems / platform engineering (Java, Spring Boot, AWS)
+  lane_b: Agentic AI / LLM application engineering
+  band: IC, SDE I to SDE II (Software Engineer / Software Engineer II / SDE)
+
+filters:
+  # A title must match one of these to survive. Matched case-insensitively as substrings.
+  include_titles:
+    - software engineer
+    - software development engineer
+    - software developer
+    - sde
+    - backend
+    - back end
+    - back-end
+    - full stack
+    - distributed systems
+    - platform engineer
+    - infrastructure engineer
+    - systems engineer
+    - cloud engineer
+    - api engineer
+    - java developer
+    - member of technical staff
+    - ai engineer
+    - ml engineer
+    - llm
+    - genai
+    - agent
+    - forward deployed
+
+  # The seniority ceiling, and the highest-leverage list in this file. Public boards are
+  # dominated by Senior/Staff/Principal reqs, so this is what drops the large majority of
+  # what gets fetched. Checked BEFORE include_titles — an exclusion always wins.
+  #
+  # Matched whole-word with an optional trailing period, so "sr" covers "Sr" and "Sr." and
+  # will not fire inside "SRE". Raise or lower this block to move your band.
+  exclude_titles:
+    - senior
+    - sr
+    - staff
+    - principal
+    - lead            # "Lead Engineer" yes; "Leader" needs its own entry, below
+    - leader
+    - leadership
+    - architect
+    - manager
+    - director
+    - head of
+    - vp
+    - vice president
+    - chief
+    - distinguished
+    - fellow
+    # Some employers write the whole band as an abbreviation, so the spelled-out ceiling never
+    # fires. MTS on its own is in band; these four are Senior/Lead/Principal/Distinguished
+    # Member of Technical Staff and are not.
+    - smts
+    - lmts
+    - pmts
+    - dmts
+    # Not engineering, and these flood every board.
+    - intern
+    - internship
+    - apprentice
+    - trainee
+    - account executive
+    - sales
+    - marketing
+    - recruiter
+    - recruiting
+    - payroll
+    - accountant
+    - counsel
+    - designer
+    - program manager
+    - product manager
+    - project manager
+
+  # Phrases blanked out of the title BEFORE exclude_titles runs, for in-band titles that
+  # happen to contain a seniority word. The ceiling still applies to the rest of the title,
+  # so "Sr Member of Technical Staff" is still dropped.
+  exclude_overrides:
+    - member of technical staff
+
+  # Anything matching include_titles but not this is tagged Lane B in the digest.
+  lane_a_titles:
+    - software engineer
+    - software development engineer
+    - software developer
+    - sde
+    - backend
+    - back end
+    - back-end
+    - distributed systems
+    - platform engineer
+    - infrastructure engineer
+    - systems engineer
+    - cloud engineer
+    - java developer
+
+geo:
+  # Geography is an ALLOWLIST, not a denylist. With require_india_signal on, a posting with no
+  # match in any list below is dropped. The alternative — enumerating foreign cities — is never
+  # complete, and every gap leaks an out-of-country req into the digest.
+  #
+  # Precedence when several match: home > remote > relocate > country. That is the order you
+  # would actually prefer the outcomes in.
+  country_terms:
+    - india
+    - bharat
+  home_terms:            # no relocation needed
+    - hyderabad
+    - telangana
+    - secunderabad
+  relocation_terms:      # in-country but you would have to move
+    - bangalore
+    - bengaluru
+    - pune
+    - gurgaon
+    - gurugram
+    - noida
+    - delhi
+    - ncr
+    - chennai
+    - mumbai
+    - kolkata
+    - ahmedabad
+    - kochi
+    - coimbatore
+    - chandigarh
+    - jaipur
+    - indore
+  remote_terms:
+    - remote
+    - work from home
+    - wfh
+    - anywhere
+  require_india_signal: true
+
+comp:
+  currency: INR
+  target_lpa: 45
+  floor_lpa: 38              # below this is a discard
+  min_fixed_lpa: 28          # fixed base, separate from total
+  # Indian postings almost never publish a band, so the scorer judges this from the company and
+  # the level. Explain anything unusual about your current package here — a scorer that thinks
+  # you already earn more than you do will mark good roles down.
+  note: |
+    Current total is inflated in year one by a non-repeating sign-on and a back-loaded vest;
+    steady state is meaningfully lower. So an offer that looks flat on total may be a real
+    raise in recurring cash. Flag those rather than discarding them.
+  dealbreakers:
+    - service-based or consultancy comp bands
+    - employment bonds or notice-lock clauses
+    - equity-heavy offers with a weak fixed base
+    - commission or variable-only structures
+
+# Free text, pasted into the scoring prompt. This is where you tell the scorer what actually
+# matters right now, including anything awkward. Be blunt — it tunes every score in the digest.
+situation: |
+  Timeline: looking to move within three months, not urgently.
+
+  Consequences for scoring:
+  - Speed matters. A 7 that can produce a signed offer in six weeks beats a 9 with a
+    four-month loop.
+  - The weak point is the resume screen, not sourcing. Weight roles where a referral is
+    plausible over marginally better cold ones.
+  - Reason for leaving, the version to use: growth.
+  - Years of experience: ~3. Treat a JD asking for 5+ years as a stretch that needs a
+    referral, and 8+ as effectively closed.
+
+# What the drafter must never put in a referral message, and the one sanctioned answer to "why
+# are you leaving". Kept here rather than in draft.py on purpose: draft.py is version-controlled
+# and this is the most sensitive thing the pipeline knows about you. Leave the list empty if
+# there is nothing to hide.
+drafting:
+  never_mention:
+    - anything about the current team that is not public
+    - an employment gap, unless asked directly
+  reason_for_leaving: >-
+    growth — the scope you want is not available on the current team. Never elaborate
+    beyond this.
+
+exclusions:
+  # Dropped before anything else, by company name. Staffing firms, ex-employers, anywhere you
+  # would not go.
+  companies:
+    - Example Consultancy
+    - Example Staffing
+  # Not read by the code — kept as a note to yourself about categories to skip while curating
+  # config/seed.yaml.
+  industries:
+    - staffing, contract-to-hire, third-party payroll, agency placement
+    - client-project delivery rather than owning a product
+
+targets:
+  # The companies you care about. Used for reporting and for the email-alert checklist; the
+  # actual polling is driven by config/seed.yaml.
+  companies:
+    - Databricks
+    - Cloudflare
+    - Atlassian
+    - Adobe
+    - Salesforce
+  # Flagged in the digest as likely to pay below your band for the title.
+  comp_risk:
+    - Example Bank
+
+runtime:
+  timezone: Asia/Kolkata
+  claude_bin: claude         # the Claude Code CLI; scoring and drafting shell out to it
+  score_threshold: 7         # the referral bar. 7+ gets a draft written
+  max_score_batch: 12        # reqs per scoring call — one call judging twelve is more
+                             # consistent than twelve calls judging one
+  # Sent on every board request. Some ATS edges reject an obviously scripted agent.
+  user_agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)
+    Chrome/124.0 Safari/537.36
