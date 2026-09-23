@@ -62,6 +62,20 @@ def main() -> int:
             print(f"  {name:<8} {' '.join(cmd[1:]):<34} {why}")
         return 0
 
+    # Check the one dependency that fails silently and expensively. An expired Midway session
+    # does not make `claude` error cleanly: some calls exit 1, others hang until their timeout,
+    # so score and draft used to burn ~25 minutes discovering it one call at a time. fetch
+    # needs no credentials, so still run it — a digest built on a stale score beats no digest.
+    if any(s[0] in ("score", "draft") for s in stages):
+        import claudecall
+        ok, msg = claudecall.preflight()
+        if not ok:
+            print(f"claude is not usable: {msg}\n")
+            stages = [s for s in stages if s[0] not in ("score", "draft")]
+            print("Skipping score and draft. Running "
+                  f"{', '.join(s[0] for s in stages) or 'nothing'} instead; re-run once "
+                  "`claude` works to score and draft what today's fetch brought in.\n")
+
     failed = []
     for name, cmd, _ in stages:
         print(f"=== {name} " + "=" * (70 - len(name)))

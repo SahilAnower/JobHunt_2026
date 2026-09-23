@@ -164,7 +164,89 @@ KNOWN = {
                       "site": "search", "note": "180 reqs"},
     "Uber": {"platform": "oracle", "host": "iaziqy.fa.ocs.oraclecloud.com", "site": "CX",
              "note": "531 reqs; the ORC host is unguessable, it came out of the page source"},
+
+    # Third round, 2026-09-22. Found by verifying candidate ATS slugs against the live public
+    # APIs and keeping only boards that returned a non-empty job list. All 21 are recorded here
+    # rather than derived from a seed URL, and deliberately carry no `reqs:` in seed.yaml:
+    #
+    #   1. Most of them serve `absolute_url` on their own careers domain
+    #      (www.mongodb.com/careers/job/?gh_jid=...), which classifies as own_site and would
+    #      silently drop the board. The real slug is the one in the API path.
+    #   2. Even where the URL does derive, a seed req for an already-polled board is a straight
+    #      duplicate of what the poll returns — and because these careers pages are JavaScript
+    #      shells, the duplicate cannot be enriched, so it scores blind. Blind duplicates for
+    #      MongoDB and Coinbase scored 8 and outranked the real reqs. Let the poll do the work.
+    #
+    # `in-band` below is what cleared both the geo and the title gate on 2026-09-22 — a
+    # snapshot. The board is the durable fact; the count is not.
+    "MongoDB": {"platform": "greenhouse", "slug": "mongodb", "verified": "2026-09-22",
+                "note": "401 reqs, 75 India, 9 in-band — 6 of them 'Software Engineer 3' "
+                        "(MongoDB's SDE II equivalent) in Gurugram. Richest in-band feed found"},
+    "Stripe": {"platform": "greenhouse", "slug": "stripe", "verified": "2026-09-22",
+               "note": "668 reqs, 48 India, 4 in-band IC 'Software Engineer' seats in Bangalore"},
+    "GitLab": {"platform": "greenhouse", "slug": "gitlab", "verified": "2026-09-22",
+               "note": "202 reqs, 25 India, 2 in-band; 'Intermediate' is GitLab's SDE II "
+                       "equivalent and the company is all-remote, so no relocation cost"},
+    "Coinbase": {"platform": "greenhouse", "slug": "coinbase", "verified": "2026-09-22",
+                 "note": "218 reqs, 11 India, 1 in-band — Security Platform, Remote India"},
+    "Okta": {"platform": "greenhouse", "slug": "okta", "verified": "2026-09-22",
+             "note": "329 reqs, 99 India, 2 in-band (one is iOS, so a poor stack fit)"},
+    "OpenAI": {"platform": "ashby", "slug": "openai", "verified": "2026-09-22",
+               "note": "814 reqs, 11 India, 1 in-band — Applied AI Engineer, Delhi/Mumbai"},
+    "Bosch": {"platform": "smartrecruiters", "slug": "BoschGroup", "verified": "2026-09-22",
+              "note": "400 reqs and 341 of them in India, the highest India volume of anything "
+                      "checked; 14 in-band but skewed to embedded C/C++, .NET/CAD and SAP BTP. "
+                      "Expect the comp floor to filter most of it"},
+    "Netskope": {"platform": "greenhouse", "slug": "netskope", "verified": "2026-09-22",
+                 "note": "143 reqs, 20 India, 1 in-band and it is an IT/Workday systems seat"},
+    "Mindtickle": {"platform": "lever", "slug": "mindtickle", "verified": "2026-09-22",
+                   "note": "17 reqs, all India, 1 in-band — business systems, not product"},
+    "Ubisoft": {"platform": "smartrecruiters", "slug": "Ubisoft2", "verified": "2026-09-22",
+                "note": "only 4 reqs on the whole board, 1 in-band GenAI seat in Pune; gaming, "
+                        "so comp is likely under the floor"},
+
+    # Verified live but zero in-band India reqs on 2026-09-22. Kept on the Datadog precedent:
+    # the board is real and the req list churns weekly, so polling costs one call.
+    "Elastic": {"platform": "greenhouse", "slug": "elastic", "verified": "2026-09-22",
+                "note": "372 reqs, 14 India — all Consulting Architect / field engineering"},
+    "Zscaler": {"platform": "greenhouse", "slug": "zscaler", "verified": "2026-09-22",
+                "note": "376 reqs, 84 India and all sales"},
+    "Twilio": {"platform": "greenhouse", "slug": "twilio", "verified": "2026-09-22",
+               "note": "141 reqs, 13 India and all marketing"},
+    "Druva": {"platform": "greenhouse", "slug": "druva", "verified": "2026-09-22",
+              "note": "36 reqs, 12 Pune — engineering present but Principal/Manager band only"},
+    "Airbnb": {"platform": "greenhouse", "slug": "airbnb", "verified": "2026-09-22",
+               "note": "157 reqs, 7 India, all Senior or non-engineering"},
+    "Samsara": {"platform": "greenhouse", "slug": "samsara", "verified": "2026-09-22",
+                "note": "266 reqs, 8 Bengaluru; Network Engineer II is close but not software"},
+    "Groww": {"platform": "greenhouse", "slug": "groww", "verified": "2026-09-22",
+              "note": "7 reqs, all India, none engineering. Note the host is "
+                      "job-boards.eu.greenhouse.io, not the usual one"},
+    "Fastly": {"platform": "greenhouse", "slug": "fastly", "verified": "2026-09-22",
+               "note": "43 reqs, 3 Pune, support and CSM only"},
+    "Grafana Labs": {"platform": "greenhouse", "slug": "grafanalabs", "verified": "2026-09-22",
+                     "note": "137 reqs, 2 India, both Senior sales; remote-first so worth watching"},
+    "Figma": {"platform": "greenhouse", "slug": "figma", "verified": "2026-09-22",
+              "note": "155 reqs, 1 India (Account Executive). Thin, but engineering may open"},
+    "ElevenLabs": {"platform": "ashby", "slug": "elevenlabs", "verified": "2026-09-22",
+                   "note": "225 reqs, 16 India, all commercial. Second-lane if engineering opens"},
 }
+
+#
+# Slugs tried on 2026-09-22 and confirmed dead (HTTP 404 on the public board API), recorded so a
+# future session does not re-probe them. Not in KNOWN_DEAD because they are not in seed.yaml —
+# KNOWN_DEAD only affects companies that are.
+#   greenhouse 404: akamai, arcesium, aristanetworks, atlan, browserstack, canva, chargebee,
+#     clevertap, cred, delhivery, doordash, dreamsports, freshworks, harness, hashicorp, hasura,
+#     medianet, meesho, miro, moengage, navi, notion, nutanix, paloaltonetworks, pinelabs,
+#     postman, redislabs, rippling, sarvamai, snowflakecomputing, sprinklr, swiggy, thoughtspot,
+#     wayfair, zepto, zeta
+#   lever 404: innovaccer, jupiter, khatabook, netradyne, plumhq, razorpay, setu, sharechat,
+#     spinny, udaan, whatfix, zetwerk, zomato
+#   ashby: anthropic 404, deel empty list
+#   smartrecruiters: Philips and Visa both return an empty list
+# Live but zero India reqs, so not added: Lyft, Pinterest, Reddit, Instacart, Asana, Discord
+#   (greenhouse); Sierra, Ramp, Perplexity, Vanta, Linear (ashby).
 
 # Confirmed dead ends. Recording them stops a future session re-probing the same tokens.
 KNOWN_DEAD = {
@@ -207,6 +289,9 @@ def main() -> int:
             origin = "none"
 
         note = best.pop("note", None)
+        # KNOWN entries carry their own verification date; the first two rounds were all
+        # 2026-09-19, so that stays the default rather than being repeated 13 times.
+        verified_on = best.pop("verified", "2026-09-19")
         pollable = best["platform"] in POLLABLE and name not in KNOWN_DEAD
 
         row = {"company": name, "platform": best["platform"], "pollable": pollable, "enabled": pollable}
@@ -215,7 +300,7 @@ def main() -> int:
         if name in KNOWN_DEAD:
             note = f"NOT pollable: {KNOWN_DEAD[name]}"
         elif note:
-            note = f"verified live 2026-09-19 — {note}"
+            note = f"verified live {verified_on} — {note}"
         elif origin == "none":
             note = f"no URL supplied ({c.get('status', 'unknown')})"
             if c.get("human_path"):

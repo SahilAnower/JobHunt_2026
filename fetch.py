@@ -52,6 +52,11 @@ BOARDS = ROOT / "config" / "boards.yaml"
 SEED = ROOT / "config" / "seed.yaml"
 
 TIMEOUT = 25
+# Both were effectively sized for the original 16 boards. The list is 37 now, and every one of
+# these is a socket waiting on someone else's server rather than local work, so the cap was
+# limiting throughput for no benefit.
+BOARD_WORKERS = 12
+ENRICH_WORKERS = 8
 MAX_DESC = 6000          # plenty for the scorer; keeps the db small and prompts cheap
 WORKDAY_PAGES = 4        # 20 reqs per page
 WORKDAY_INDIA_PAGES = 12  # once the India facet is applied the whole set fits in a few pages
@@ -697,30 +702,50 @@ def enrich(ua: str, limit: int, verbose: bool = False) -> None:
             (JD_MIN_CHARS, limit),
         ).fetchall()
 
-        print(f"\nenriching {len(rows)} job(s) with no JD text")
-        got = 0
-        for r in rows:
+        print(f"\nenriching {len(rows)} job(s) with no JD text, "
+              f"{ENRICH_WORKERS} at a time")
+
+        # Each req is a separate request to a separate host, so these overlap cleanly. This
+        # used to be one request at a time with a 0.5s sleep between them, which on a
+        # TIMEOUT of 25s meant a handful of slow or blocked postings set the pace for the
+        # whole stage. The fetching happens here; every DB write happens in the loop below,
+        # because a sqlite3 connection is not thread-safe.
+        def grab(r):
             try:
                 text = jd_from_api(r["source"], r["url"], r["req_id"] or "", ua)
                 if not text:
                     text = extract_jd(_get_text(r["url"], ua))
-            except urllib.error.HTTPError as e:
-                # 404 and 410 on a posting URL are not fetch failures, they are the answer:
-                # the req is gone. Record that rather than retrying it every morning. 403 and
-                # 429 are the site blocking a script, which says nothing about the req.
-                if e.code in (404, 410):
-                    conn.execute(
-                        "UPDATE jobs SET still_open = 0, notes = "
-                        "TRIM(COALESCE(notes || ' | ', '') || ?) WHERE key = ?",
-                        (f"posting URL returned HTTP {e.code} on {store.now()[:10]}, "
-                         "req appears closed", r["key"]),
-                    )
-                    print(f"  {r['company']:<14} HTTP {e.code} — marked closed")
-                else:
-                    print(f"  {r['company']:<14} HTTP {e.code} (blocked, req status unknown)")
-                continue
+                return r, text, None
             except Exception as e:  # noqa: BLE001
-                print(f"  {r['company']:<14} {type(e).__name__}")
+                return r, None, e
+            finally:
+                # Kept per worker rather than per req: still spaces out repeat hits on any one
+                # host, without the delay accumulating across the whole list.
+                time.sleep(0.5)
+
+        with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as ex:
+            results = list(ex.map(grab, rows))
+
+        got = 0
+        for r, text, err in results:
+            if err is not None:
+                if isinstance(err, urllib.error.HTTPError):
+                    # 404 and 410 on a posting URL are not fetch failures, they are the answer:
+                    # the req is gone. Record that rather than retrying it every morning. 403
+                    # and 429 are the site blocking a script, which says nothing about the req.
+                    if err.code in (404, 410):
+                        conn.execute(
+                            "UPDATE jobs SET still_open = 0, notes = "
+                            "TRIM(COALESCE(notes || ' | ', '') || ?) WHERE key = ?",
+                            (f"posting URL returned HTTP {err.code} on {store.now()[:10]}, "
+                             "req appears closed", r["key"]),
+                        )
+                        print(f"  {r['company']:<14} HTTP {err.code} — marked closed")
+                    else:
+                        print(f"  {r['company']:<14} HTTP {err.code} "
+                              f"(blocked, req status unknown)")
+                else:
+                    print(f"  {r['company']:<14} {type(err).__name__}")
                 continue
 
             if looks_like_jd(text):
@@ -732,7 +757,6 @@ def enrich(ua: str, limit: int, verbose: bool = False) -> None:
             else:
                 print(f"  {r['company']:<14} {'no JD':>6}        "
                       f"{r['title'][:38]}  (page is {len(text)} chars, likely a JS shell)")
-            time.sleep(0.5)
         print(f"recovered JD text for {got}/{len(rows)}")
 
 
@@ -783,7 +807,7 @@ def main() -> int:
             # facet. Passed through the board rather than imported, so fetchers stay testable.
             b["_geo"] = geo
         print(f"polling {len(live)} board(s)\n")
-        with ThreadPoolExecutor(max_workers=6) as ex:
+        with ThreadPoolExecutor(max_workers=BOARD_WORKERS) as ex:
             for board, rows, err in ex.map(lambda b: poll_board(b, ua), live):
                 tag = f"  {board['company']:<14} {board['platform']:<11}"
                 print(f"{tag} {'ERROR ' + err if err else f'{len(rows):>4} reqs'}")

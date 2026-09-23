@@ -30,12 +30,15 @@ try:
 except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
 
+import claudecall
 import store
 
 ROOT = Path(__file__).resolve().parent
 PROFILE = ROOT / "config" / "profile.yaml"
 OUTBOX = ROOT / "outbox"
-CALL_TIMEOUT = 300
+# Was 300s and the drafts ran one at a time, so six stuck calls could cost half an hour.
+# They now run concurrently, which makes a shorter ceiling per call affordable.
+CALL_TIMEOUT = 180
 
 # The voice rules matter more than anything else in this file. A referral ask that pattern
 # matches to generated text is worse than no message: it burns a contact you cannot re-ask.
@@ -115,13 +118,8 @@ def build_prompt(profile: dict, job, kind: str) -> str:
 
 
 def call_claude(prompt: str, claude_bin: str) -> str:
-    proc = subprocess.run(
-        [claude_bin, "-p", "--output-format", "text"],
-        input=prompt, capture_output=True, text=True, timeout=CALL_TIMEOUT,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:300]}")
-    return proc.stdout.strip()
+    """Kept as a thin alias so --key one-offs and any other caller still work."""
+    return claudecall.call(prompt, claude_bin, CALL_TIMEOUT).strip()
 
 
 def split_sections(raw: str) -> tuple[str, str]:
@@ -131,9 +129,23 @@ def split_sections(raw: str) -> tuple[str, str]:
     return (m.group(1) or "").strip(), (m.group(2) or "").strip()
 
 
+def draft_path_for(job) -> Path:
+    """
+    One file per req, and the req id is what makes that true. Naming on date, company and
+    title alone collides whenever a board posts two reqs with the same title on the same day,
+    and the second draft then silently overwrites the first — three JP Morgan "Software
+    Engineer III - Java AWS" reqs and two MongoDB "Software Engineer 3" reqs landed on two
+    files between them. Sending a draft written against a different req is the kind of mistake
+    that costs the contact, so the filename carries the identity the job key already has.
+    """
+    ident = job["key"].split("::")[-1] or job["key"]
+    return OUTBOX / (f"{date.today().isoformat()}-{slug(job['company'])}-"
+                     f"{slug(job['title'])}-{slug(ident)}.md")
+
+
 def write_draft(job, message: str, risks: str, kind: str) -> Path:
     OUTBOX.mkdir(exist_ok=True)
-    path = OUTBOX / f"{date.today().isoformat()}-{slug(job['company'])}-{slug(job['title'])}.md"
+    path = draft_path_for(job)
     channel = "LinkedIn" if kind == "referral" else "Email"
     path.write_text(
         f"""# {job['company']} — {job['title']}
@@ -208,23 +220,51 @@ def main() -> int:
             print("\n(dry run — nothing written)")
             return 0
 
-        for r in todo:
-            print(f"\ndrafting {r['company']} — {r['title'][:44]} ...", flush=True)
-            try:
-                raw = call_claude(build_prompt(profile, r, args.kind), claude_bin)
-            except Exception as e:  # noqa: BLE001
-                print(f"  failed: {e}")
+        # One cheap call before spending real ones. An expired Midway session previously cost
+        # a CALL_TIMEOUT per draft before anything said why — five failures and 1086s for one
+        # written draft.
+        ok, msg = claudecall.preflight(claude_bin)
+        if not ok:
+            print(f"claude is not usable: {msg}")
+            return 1
+
+        # Drafts are independent, so write them concurrently. Files and outreach rows are
+        # created below on this thread: sqlite3 connections are not thread-safe, and keeping
+        # the writes serial also keeps the printed order stable.
+        workers = rt.get("max_parallel_claude", claudecall.DEFAULT_WORKERS)
+        print(f"\ncalling claude for {len(todo)} draft(s), {workers} at a time", flush=True)
+        try:
+            replies = claudecall.gather(
+                [build_prompt(profile, r, args.kind) for r in todo],
+                claude_bin, CALL_TIMEOUT, workers,
+            )
+        except claudecall.AuthExpired as e:
+            print(f"aborted: {e}")
+            return 1
+
+        written = 0
+        for r, (raw, err) in zip(todo, replies):
+            print(f"\n{r['company']} — {r['title'][:44]}")
+            if err is not None:
+                if isinstance(err, subprocess.TimeoutExpired):
+                    print(f"  failed: timed out after {CALL_TIMEOUT}s")
+                else:
+                    print(f"  failed: {err}")
                 continue
-            message, risks = split_sections(raw)
+            message, risks = split_sections(raw.strip())
             path = write_draft(r, message, risks, args.kind)
             store.add_outreach(
                 conn, job_key=r["key"], company=r["company"], kind=args.kind,
                 contact=r["human_path"], channel="linkedin" if args.kind == "referral" else "email",
                 draft_path=str(path.relative_to(ROOT)),
             )
+            written += 1
             print(f"  -> {path.relative_to(ROOT)}")
 
-        store.log_run(conn, "draft", detail={"drafted": len(todo)})
+        if written < len(todo):
+            print(f"\n{written}/{len(todo)} drafted; the rest stay undrafted and will be "
+                  f"retried next run.")
+        store.log_run(conn, "draft", detail={"drafted": written})
 
     print("\nDrafts are drafts. Nothing was sent; read each one and send it yourself.")
     return 0

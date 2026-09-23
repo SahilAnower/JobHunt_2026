@@ -32,12 +32,15 @@ try:
 except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
 
+import claudecall
 import store
 
 ROOT = Path(__file__).resolve().parent
 PROFILE = ROOT / "config" / "profile.yaml"
 JD_CHARS = 2500          # per req, inside the prompt
-CALL_TIMEOUT = 420
+# Was 420s, chosen when batches ran one at a time. Batches now run concurrently, so a stuck
+# call no longer blocks the others and there is no reason to wait this long for one of them.
+CALL_TIMEOUT = 240
 
 RUBRIC = """\
 Score 1-10. The scale is calibrated so that 7 is the bar for spending a referral ask on it:
@@ -133,16 +136,8 @@ def build_prompt(profile: dict, jobs: list) -> str:
 
 
 def call_claude(prompt: str, claude_bin: str) -> str:
-    proc = subprocess.run(
-        [claude_bin, "-p", "--output-format", "text"],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        timeout=CALL_TIMEOUT,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:400]}")
-    return proc.stdout
+    """Kept as a thin alias so --key style one-offs and any caller still work."""
+    return claudecall.call(prompt, claude_bin, CALL_TIMEOUT)
 
 
 def parse_scores(raw: str, n: int) -> list[dict]:
@@ -208,17 +203,40 @@ def main() -> int:
             print("\n(dry run — claude not called)")
             return 0
 
+        # One cheap call first. An expired Midway session used to cost a full CALL_TIMEOUT per
+        # batch before anyone found out, which is most of how a score stage reached 420s
+        # having scored nothing.
+        ok, msg = claudecall.preflight(claude_bin)
+        if not ok:
+            print(f"claude is not usable: {msg}")
+            return 1
+
+        # Batches are independent, so run them together rather than one after another. The DB
+        # writes stay below, on this thread, because a sqlite3 connection is not thread-safe.
+        workers = rt.get("max_parallel_claude", claudecall.DEFAULT_WORKERS)
+        print(f"calling claude for {len(batches)} batch(es), {workers} at a time", flush=True)
+        try:
+            replies = claudecall.gather(
+                [build_prompt(profile, b) for b in batches],
+                claude_bin, CALL_TIMEOUT, workers,
+            )
+        except claudecall.AuthExpired as e:
+            print(f"aborted: {e}")
+            return 1
+
         total = 0
-        for bi, batch in enumerate(batches, 1):
-            print(f"\nbatch {bi}/{len(batches)} ({len(batch)} reqs) ...", flush=True)
-            try:
-                raw = call_claude(build_prompt(profile, batch), claude_bin)
-                results = parse_scores(raw, len(batch))
-            except subprocess.TimeoutExpired:
-                print("  timed out; leaving this batch unscored")
+        for bi, (batch, (raw, err)) in enumerate(zip(batches, replies), 1):
+            print(f"\nbatch {bi}/{len(batches)} ({len(batch)} reqs) ...")
+            if err is not None:
+                if isinstance(err, subprocess.TimeoutExpired):
+                    print(f"  timed out after {CALL_TIMEOUT}s; leaving this batch unscored")
+                else:
+                    print(f"  failed: {err}")
                 continue
+            try:
+                results = parse_scores(raw, len(batch))
             except Exception as e:  # noqa: BLE001
-                print(f"  failed: {e}")
+                print(f"  unparseable reply: {e}")
                 continue
 
             for r in results:
