@@ -92,6 +92,17 @@ def match_smartrecruiters(u, p):
     return "smartrecruiters", {"slug": parts[0]} if parts else None
 
 
+def match_avature(u, p):
+    # Avature is usually white-labelled onto the employer's own hostname, so the host is no
+    # help — jobs.ea.com gives nothing away. The path is the tell: Avature portals serve
+    # /<portal>/careers/JobDetail/<slug>/<id>. Keyed on that, with the portal segment kept
+    # because it is part of every subsequent request.
+    m = re.match(r"^/([A-Za-z_]{2,10})/careers/JobDetail/", p.path)
+    if not m:
+        return None
+    return "avature", {"host": p.netloc, "portal": m.group(1)}
+
+
 def match_rippling(u, p):
     # ats.rippling.com/<slug>/jobs/<uuid> — Rippling's own ATS product.
     if "ats.rippling.com" not in p.netloc:
@@ -106,6 +117,7 @@ RULES = [
     match_lever,
     match_workday,
     match_smartrecruiters,
+    match_avature,
     match_rippling,
 ]
 
@@ -124,7 +136,8 @@ def classify(url: str):
 
 # Platforms whose public JSON API fetch.py can read. `own_site` and `rippling` have no
 # documented public job-board API.
-POLLABLE = {"greenhouse", "ashby", "lever", "smartrecruiters", "workday", "oracle", "atlassian"}
+POLLABLE = {"greenhouse", "ashby", "lever", "smartrecruiters", "workday", "oracle", "atlassian",
+            "avature"}
 
 # Some companies front their ATS with their own careers domain, so the URL hides the board.
 # These are not guesses: each was confirmed by a live request on 2026-09-19 (HTTP 200 and a
@@ -230,6 +243,70 @@ KNOWN = {
               "note": "155 reqs, 1 India (Account Executive). Thin, but engineering may open"},
     "ElevenLabs": {"platform": "ashby", "slug": "elevenlabs", "verified": "2026-09-22",
                    "note": "225 reqs, 16 India, all commercial. Second-lane if engineering opens"},
+
+    # 2026-09-24. Sahil supplied a live req URL, which is what finally resolved this one:
+    # visa.wd5.myworkdayjobs.com/en-US/Visa/job/Software-Engineer_REF088484W. Note the site is
+    # "Visa", not the "search"/"External" style used by the other Workday tenants here — and
+    # the earlier round had wrongly looked for Visa on SmartRecruiters, where the slug "Visa"
+    # answers with an empty list. A careers page that hides its ATS is why a single real job
+    # URL beats any amount of probing.
+    "Visa": {"platform": "workday", "tenant": "visa", "instance": "wd5", "site": "Visa",
+             "verified": "2026-09-24",
+             "note": "73 reqs and every one of them in India, 3 in-band — Software Engineer "
+                     "(1-2 yrs) and Software Engineer, both Bengaluru, plus a Systems Engineer"},
+
+    # 2026-09-24. gapinc.com hides its ATS completely: the careers page is ASP.NET with no job
+    # content in the HTML and no vendor string anywhere, and the six URL patterns find nothing.
+    # What gave it away was its own JSON API, /customapi/jobsearch/search (POST only, found in
+    # _assets/scripts/gap-corporate-site.js) — every result carries an `applyurl` pointing at
+    # gapinc.wd1.myworkdayjobs.com/GAPINC. So the bespoke endpoint was only the signpost; the
+    # board itself is ordinary Workday and needs no new fetcher.
+    #
+    # Two things worth keeping. The custom API counts 4,763 reqs across all brands including
+    # retail, while the GAPINC Workday site holds 242 — the corporate/HQ subset, which is the
+    # half worth polling. And its city facet lists "Indianapolis", the exact Indiana-contains-
+    # india trap india_facet_values() already boundary-checks for.
+    "Gap Inc": {"platform": "workday", "tenant": "gapinc", "instance": "wd1", "site": "GAPINC",
+                "verified": "2026-09-24",
+                "note": "242 reqs on the corporate site, 5 in India and all of them Hyderabad, "
+                        "0 in-band — Sr/Staff Architect and Sr Software Engineer. Kept because "
+                        "Hyderabad is home, so anything in band here needs no relocation"},
+
+    # 2026-09-24. careersatagoda.com is a WordPress site that renders its job list through
+    # admin-ajax.php, so no ATS URL appears anywhere in the markup. What gave it away was the
+    # plugin directory name: wp-content/plugins/greenhouse-2027. The slug itself is held
+    # server-side in the plugin, not in any asset, so it came from testing candidates against
+    # boards-api — plain "agoda" is the live one, and seven other guesses 404.
+    #
+    # Worth knowing before expecting much: Agoda bands its India engineering above this search.
+    # Of 38 engineer/developer reqs on the board, 27 are Bangkok, and every Gurugram engineering
+    # req is Staff (their Level 4) or Lead (Level 5). The title gate drops all of them, correctly.
+    "Agoda": {"platform": "greenhouse", "slug": "agoda", "verified": "2026-09-24",
+              "note": "289 reqs, 12 India (Gurugram/Gurgaon/Pune), 0 in-band — India "
+                      "engineering is Staff/Lead only; the IC SDE bands sit in Bangkok"},
+
+    # 2026-09-24. Richest in-band feed found so far. Derives cleanly from the URL Sahil supplied
+    # (wd102 is an instance number nothing else here uses), and is in KNOWN only to keep the
+    # seed free of a blind duplicate.
+    "JioStar": {"platform": "workday", "tenant": "jiostar", "instance": "wd102",
+                "site": "JioStar", "verified": "2026-09-24",
+                "note": "236 reqs, 233 of them India, 11 in-band — every one a 'Software "
+                        "Development Engineer II' in Bengaluru. Note the board is mostly ad "
+                        "sales; the SDE ladder runs II -> Senior -> Staff -> Senior Staff, so "
+                        "II is the only rung in band"},
+
+    # 2026-09-24. EA runs Avature white-labelled at jobs.ea.com. Avature publishes no JSON and
+    # no RSS here (JobRss, SearchJobsRss, JobSearchRss and /api/jobs all 404), so this needed a
+    # new fetcher that parses the server-rendered HTML — see fetch_avature. There is no
+    # server-side India filter, so it reads all pages and lets the geo gate do the work.
+    "Electronic Arts": {"platform": "avature", "host": "jobs.ea.com", "portal": "en_US",
+                        "verified": "2026-09-24",
+                        "note": "336 reqs, 13 India and all Hyderabad, 3 in-band — Software "
+                                "Engineer II, Software Engineer III and Software Engineer. The "
+                                "only in-band software seats on the list needing no relocation. "
+                                "A first check hours earlier read 17/4; one req's card stopped "
+                                "listing Hyderabad among its locations, so treat these counts as "
+                                "a same-day snapshot"},
 }
 
 #
@@ -244,7 +321,9 @@ KNOWN = {
 #   lever 404: innovaccer, jupiter, khatabook, netradyne, plumhq, razorpay, setu, sharechat,
 #     spinny, udaan, whatfix, zetwerk, zomato
 #   ashby: anthropic 404, deel empty list
-#   smartrecruiters: Philips and Visa both return an empty list
+#   smartrecruiters: Philips and Visa both return an empty list. The Visa result was a red
+#     herring rather than a dead end — Visa runs Workday, and is in KNOWN above as of
+#     2026-09-24. An empty list means "wrong board", not "no board".
 # Live but zero India reqs, so not added: Lyft, Pinterest, Reddit, Instacart, Asana, Discord
 #   (greenhouse); Sierra, Ramp, Perplexity, Vanta, Linear (ashby).
 

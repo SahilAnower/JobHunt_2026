@@ -60,6 +60,9 @@ ENRICH_WORKERS = 8
 MAX_DESC = 6000          # plenty for the scorer; keeps the db small and prompts cheap
 WORKDAY_PAGES = 4        # 20 reqs per page
 WORKDAY_INDIA_PAGES = 12  # once the India facet is applied the whole set fits in a few pages
+# Avature offers no location filter, so the whole board is read: 20 per page, and EA runs ~340
+# reqs. The ceiling is generous because stopping early silently loses reqs rather than erroring.
+AVATURE_PAGES = 30
 ORACLE_PAGES = 24        # 25 reqs per page, per location — Uber has to be read unfiltered
 
 
@@ -540,10 +543,118 @@ def fetch_smartrecruiters(board: dict, ua: str) -> list[dict]:
     return out
 
 
+def _avature_location(subtitle_html: str) -> str:
+    """
+    Pull every location out of an Avature result subtitle, which is bullet-separated and looks
+    like:
+
+        Stockholm, Sweden • Bucharest, Romania • Role ID 216197 • Regular Employee • CT - Frostbite
+
+    A req can list up to five cities, and the India one is not always first: 98 of EA's 336 reqs
+    are multi-location. Keeping only the leading segment loses those, which is the same mistake
+    Greenhouse's `location.name` invites — so, as there, merge them all and let the geo gate read
+    the union.
+
+    Everything from the "Role ID" marker onward is metadata (req id, employment type, studio) and
+    is dropped, because feeding a studio name like "CT - Frostbite" to the geo gate is noise. All
+    336 subtitles carry that marker; if one ever does not, fall back to the first segment only,
+    which is the safe half of the guess.
+    """
+    if not subtitle_html:
+        return ""
+    flat = html.unescape(re.sub(r"\s+", " ", strip_html(subtitle_html))).strip()
+    segs = [s.strip(" ;,") for s in re.split(r"\s*[•·|]\s*", flat) if s.strip(" ;,")]
+    cut = next((i for i, s in enumerate(segs) if re.match(r"role\s*id\b", s, re.I)), None)
+    places = segs[:cut] if cut is not None else segs[:1]
+    return " ; ".join(places)
+
+
+def fetch_avature(board: dict, ua: str) -> list[dict]:
+    """
+    Avature, which EA runs white-labelled at jobs.ea.com. The only fetcher here that reads HTML
+    instead of JSON, because this platform genuinely publishes no machine-readable feed: on EA's
+    portal, JobRss, SearchJobsRss, JobSearchRss, /api/jobs and /careers/api/jobs all 404, and
+    `?jobRss=1` answers with the same HTML page.
+
+    What makes it workable anyway is that the search page is server-rendered — one
+    `<article class="article--result">` per req, carrying an absolute JobDetail link, the title,
+    and a location subtitle. That is a real distinction from a JS shell like Gap's: there is no
+    guessing involved, the data is in the markup.
+
+    Be honest about the tradeoff this carries. Every other board here is pinned to a documented
+    JSON contract, while this one depends on Avature's CSS class names. A theme rename breaks it,
+    and it breaks *quietly* — the selectors stop matching and the board simply reports 0 reqs,
+    which is indistinguishable from "nothing is posted". That is why it raises on a page that
+    parses to nothing while still advertising results, instead of returning an empty list and
+    letting closure detection mark every EA req as filled.
+
+    Paging is `?jobOffset=N` in steps of 20. There is no location facet in the URL, so this
+    reads the whole board and leaves India filtering to the geo gate.
+    """
+    host = board.get("host") or "jobs.ea.com"
+    portal = board.get("portal") or "en_US"
+    base = f"https://{host}/{portal}/careers/SearchJobs"
+
+    card_rx = re.compile(r'<article class="article article--result')
+    link_rx = re.compile(
+        r'href="(https?://[^"]*?/careers/JobDetail/[^"]+)"[^>]*>\s*(.*?)\s*</a>', re.S)
+    sub_rx = re.compile(r'article__header__text__subtitle">(.*?)</div>', re.S)
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for page in range(AVATURE_PAGES):
+        offset = page * 20
+        url = base if offset == 0 else f"{base}?jobOffset={offset}"
+        try:
+            raw = _get_text(url, ua)
+        except urllib.error.HTTPError as e:
+            if page == 0:
+                raise
+            break  # a later page failing is the end of the list, not a broken board
+        cards = card_rx.split(raw)[1:]
+        if not cards:
+            if page == 0:
+                # Advertised results but nothing parsed: the markup changed. Say so loudly.
+                raise RuntimeError(
+                    f"avature: no job cards parsed from {url} — the portal markup has probably "
+                    "changed, so fetch_avature's selectors need updating")
+            break
+        added = 0
+        for card in cards:
+            m = link_rx.search(card)
+            if not m:
+                continue
+            link = html.unescape(m.group(1))
+            if link in seen:
+                continue
+            seen.add(link)
+            title = html.unescape(re.sub(r"\s+", " ", strip_html(m.group(2)))).strip()
+            sm = sub_rx.search(card)
+            loc = _avature_location(sm.group(1) if sm else "")
+            # Avature ends the JobDetail path with the numeric req id.
+            rid = link.rstrip("/").split("/")[-1].split("?")[0]
+            out.append({
+                "company": board["company"],
+                "title": title,
+                "location": loc,
+                "url": link,
+                "source": "avature",
+                "req_id": rid if rid.isdigit() else "",
+                "posted_at": "",
+                "description": "",
+            })
+            added += 1
+        if not added:
+            break
+        time.sleep(0.3)
+    return out
+
+
 FETCHERS = {
     "greenhouse": fetch_greenhouse,
     "ashby": fetch_ashby,
     "lever": fetch_lever,
+    "avature": fetch_avature,
     "workday": fetch_workday,
     "oracle": fetch_oracle,
     "atlassian": fetch_atlassian,

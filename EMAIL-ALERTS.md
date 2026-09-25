@@ -1,13 +1,23 @@
 # Email alerts — the route into the boards jobhunt can't poll
 
-15 of your 31 targets run their careers page as a JavaScript application. A script gets a nav
-bar and a cookie banner; there is no honest way to poll them. But all of them will *email* you
-when a matching req opens, and an alert email is machine-readable in a way the page it links to
-is not. So the alert email becomes the feed.
+14 of your 56 targets run their careers page as a JavaScript application, or post through a
+board with no public API. A script gets a nav bar and a cookie banner; there is no honest way to
+poll them. But all of them will *email* you when a matching req opens, and an alert email is
+machine-readable in a way the page it links to is not. So the alert email becomes the feed.
 
-The other 16 are polled directly now, so you can skip them in step 3 below. The ones that still
+The other 42 are polled directly now, so you can skip them in step 3 below. The ones that still
 need an alert are Google, Meta, Microsoft, LinkedIn, Apple, NVIDIA, ServiceNow, Cisco, Intuit,
-Wells Fargo, Visa, Flipkart, PhonePe, Rippling and Juspay.
+Wells Fargo, Flipkart, PhonePe, Rippling and Juspay.
+
+Visa used to be on that list and no longer is: it runs Workday at `visa.wd5.myworkdayjobs.com`
+under the site `Visa`, confirmed on 2026-09-24 from a single live req URL. Gap Inc was cleared
+the same day and took more digging — gapinc.com leaks no ATS at all, and the answer came from
+its own POST-only endpoint `/customapi/jobsearch/search`, whose every result carries an
+`applyurl` on `gapinc.wd1.myworkdayjobs.com/GAPINC`.
+
+Both are worth remembering as the cheapest way to clear one of these. One real job link settles
+what probing a careers page cannot, and when even that is missing, the page's own search API
+names the ATS it is a front for.
 
 One-time setup, about 40 minutes. After that it runs itself.
 
@@ -99,7 +109,6 @@ Set the alert filters to **Software Engineer, India** where the form allows it.
 | Cisco | jobs.cisco.com → "Create job alert" |
 | Intuit | jobs.intuit.com → "Join our talent community" |
 | Wells Fargo | wellsfargojobs.com → "Join our talent community" |
-| Visa | usa.visa.com/careers → job alerts |
 | Flipkart | flipkartcareers.com → talent community |
 | PhonePe | phonepe.com/careers → the Greenhouse alert form |
 | Rippling | rippling.com/careers → the Rippling ATS alert form |
