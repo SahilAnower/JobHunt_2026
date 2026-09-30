@@ -83,6 +83,9 @@ filters:
     - leadership
     - architect
     - manager
+    - mgr             # Some boards abbreviate it in slugs, and NetApp's do: without this,
+                      # "Mgr Software Engineer" clears a list containing only "manager".
+                      # Every abbreviation of a band needs its own entry, as SMTS/PMTS do.
     - director
     - head of
     - vp
@@ -249,6 +252,9 @@ runtime:
   timezone: Asia/Kolkata
   claude_bin: claude         # the Claude Code CLI; scoring and drafting shell out to it
   score_threshold: 7         # the referral bar. 7+ gets a draft written
+  max_parallel_claude: 4     # concurrent `claude -p` calls in score.py and draft.py. Each is a
+                             # subprocess waiting on a network round trip, so they overlap well.
+                             # Set to 1 for the old strictly-serial behaviour.
   max_score_batch: 12        # reqs per scoring call — one call judging twelve is more
                              # consistent than twelve calls judging one
   # Sent on every board request. Some ATS edges reject an obviously scripted agent.

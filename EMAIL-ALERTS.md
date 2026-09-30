@@ -1,12 +1,12 @@
 # Email alerts — the route into the boards jobhunt can't poll
 
-14 of your 56 targets run their careers page as a JavaScript application, or post through a
+13 of your 57 targets run their careers page as a JavaScript application, or post through a
 board with no public API. A script gets a nav bar and a cookie banner; there is no honest way to
 poll them. But all of them will *email* you when a matching req opens, and an alert email is
 machine-readable in a way the page it links to is not. So the alert email becomes the feed.
 
-The other 42 are polled directly now, so you can skip them in step 3 below. The ones that still
-need an alert are Google, Meta, Microsoft, LinkedIn, Apple, NVIDIA, ServiceNow, Cisco, Intuit,
+The other 44 are polled directly now, so you can skip them in step 3 below. The ones that still
+need an alert are Google, Meta, Microsoft, LinkedIn, Apple, NVIDIA, ServiceNow, Cisco,
 Wells Fargo, Flipkart, PhonePe, Rippling and Juspay.
 
 Visa used to be on that list and no longer is: it runs Workday at `visa.wd5.myworkdayjobs.com`
@@ -15,9 +15,14 @@ the same day and took more digging — gapinc.com leaks no ATS at all, and the a
 its own POST-only endpoint `/customapi/jobsearch/search`, whose every result carries an
 `applyurl` on `gapinc.wd1.myworkdayjobs.com/GAPINC`.
 
-Both are worth remembering as the cheapest way to clear one of these. One real job link settles
-what probing a careers page cannot, and when even that is missing, the page's own search API
-names the ATS it is a front for.
+Intuit came off the list on 2026-09-29 without anyone looking at Intuit at all. A NetApp URL
+turned out to share Intuit's exact path shape, `/job/-/-/<org>/<req>`, which identified both as
+Radancy/TalentBrew — a platform polled through `/sitemap.xml`. Its seed URL had sat classified as
+own_site since day one.
+
+All three are worth remembering as the cheapest way to clear one of these. One real job link
+settles what probing a careers page cannot; when even that is missing, the page's own search API
+names the ATS it fronts; and a URL *shape* can clear a company nobody was investigating.
 
 One-time setup, about 40 minutes. After that it runs itself.
 
@@ -107,7 +112,6 @@ Set the alert filters to **Software Engineer, India** where the form allows it.
 | NVIDIA | nvidia.com/en-us/about-nvidia/careers → job alerts |
 | ServiceNow | careers.servicenow.com → talent community |
 | Cisco | jobs.cisco.com → "Create job alert" |
-| Intuit | jobs.intuit.com → "Join our talent community" |
 | Wells Fargo | wellsfargojobs.com → "Join our talent community" |
 | Flipkart | flipkartcareers.com → talent community |
 | PhonePe | phonepe.com/careers → the Greenhouse alert form |

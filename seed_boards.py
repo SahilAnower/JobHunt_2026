@@ -92,6 +92,16 @@ def match_smartrecruiters(u, p):
     return "smartrecruiters", {"slug": parts[0]} if parts else None
 
 
+def match_radancy(u, p):
+    # Radancy/TalentBrew career sites live on the employer's own hostname, so only the path
+    # identifies them: /job/<city>/<title-slug>/<org-id>/<req-id>. The city and title are
+    # sometimes literal dashes on a direct link (/job/-/-/27600/97816764496), which is why the
+    # segments are not constrained beyond "not a slash".
+    if re.match(r"^/job/[^/]+/[^/]+/\d+/\d+/?$", p.path):
+        return "radancy", {"host": p.netloc}
+    return None
+
+
 def match_avature(u, p):
     # Avature is usually white-labelled onto the employer's own hostname, so the host is no
     # help — jobs.ea.com gives nothing away. The path is the tell: Avature portals serve
@@ -118,6 +128,7 @@ RULES = [
     match_workday,
     match_smartrecruiters,
     match_avature,
+    match_radancy,
     match_rippling,
 ]
 
@@ -137,7 +148,7 @@ def classify(url: str):
 # Platforms whose public JSON API fetch.py can read. `own_site` and `rippling` have no
 # documented public job-board API.
 POLLABLE = {"greenhouse", "ashby", "lever", "smartrecruiters", "workday", "oracle", "atlassian",
-            "avature"}
+            "avature", "radancy"}
 
 # Some companies front their ATS with their own careers domain, so the URL hides the board.
 # These are not guesses: each was confirmed by a live request on 2026-09-19 (HTTP 200 and a
@@ -299,6 +310,23 @@ KNOWN = {
     # no RSS here (JobRss, SearchJobsRss, JobSearchRss and /api/jobs all 404), so this needed a
     # new fetcher that parses the server-rendered HTML — see fetch_avature. There is no
     # server-side India filter, so it reads all pages and lets the geo gate do the work.
+    # 2026-09-29. Both run Radancy/TalentBrew, found from the NetApp URL Sahil supplied — whose
+    # path shape (/job/-/-/27600/97816764496) is identical to the Intuit seed URL that had sat
+    # classified as own_site since day one. So one link cleared two companies, and Intuit comes
+    # off the email-alert list.
+    #
+    # Polled via /sitemap.xml rather than the job search: Radancy's /search-jobs/results endpoint
+    # is real JSON and reports hasJobs true, but returns an empty `results` without a per-portal
+    # facet id. See fetch_radancy. Titles are de-slugified from the URL and marked weak.
+    "NetApp": {"platform": "radancy", "host": "careers.netapp.com", "verified": "2026-09-29",
+               "note": "289 jobs, 70 India, 7 in-band after adding 'mgr' to exclude_titles — "
+                       "Software Engineer seats in Bengaluru including Go/C++/Python/Kubernetes "
+                       "and Cloud/Distributed Java. Needs certifi: its chain fails macOS's "
+                       "default store"},
+    "Intuit": {"platform": "radancy", "host": "jobs.intuit.com", "verified": "2026-09-29",
+               "note": "559 jobs, 30 India, 0 in-band — Intuit India is banded at Staff, Sr Staff "
+                       "and Principal, so nothing reaches SDE I-II. Polled for churn, not supply"},
+
     "Electronic Arts": {"platform": "avature", "host": "jobs.ea.com", "portal": "en_US",
                         "verified": "2026-09-24",
                         "note": "336 reqs, 13 India and all Hyderabad, 3 in-band — Software "

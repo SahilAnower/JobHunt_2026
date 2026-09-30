@@ -31,6 +31,7 @@ import argparse
 import html
 import json
 import re
+import ssl
 import sys
 import time
 import urllib.error
@@ -68,9 +69,21 @@ ORACLE_PAGES = 24        # 25 reqs per page, per location — Uber has to be rea
 
 # ----------------------------------------------------------------------------- http
 
+# Some career hosts serve a chain that macOS's /etc/ssl/cert.pem does not complete —
+# careers.netapp.com is the one that surfaced it, failing with CERTIFICATE_VERIFY_FAILED while
+# curl against the same URL returned 200. certifi carries the intermediates, so prefer it and
+# fall back to the system store when certifi is not installed. Never disable verification: a
+# silent downgrade to unverified TLS is a worse outcome than a board that cannot be polled.
+try:
+    import certifi
+    _TLS = ssl.create_default_context(cafile=certifi.where())
+except Exception:  # noqa: BLE001
+    _TLS = ssl.create_default_context()
+
+
 def _get(url: str, ua: str) -> dict | list:
     req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+    with urllib.request.urlopen(req, timeout=TIMEOUT, context=_TLS) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
@@ -83,7 +96,7 @@ def _get_text(url: str, ua: str) -> str:
             "Accept-Language": "en-IN,en;q=0.9",
         },
     )
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+    with urllib.request.urlopen(req, timeout=TIMEOUT, context=_TLS) as r:
         return r.read().decode("utf-8", "replace")
 
 
@@ -97,7 +110,7 @@ def _post(url: str, payload: dict, ua: str) -> dict:
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+    with urllib.request.urlopen(req, timeout=TIMEOUT, context=_TLS) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
@@ -650,11 +663,75 @@ def fetch_avature(board: dict, ua: str) -> list[dict]:
     return out
 
 
+def fetch_radancy(board: dict, ua: str) -> list[dict]:
+    """
+    Radancy (formerly TalentBrew), the career-site front end NetApp and Intuit both run. The ATS
+    behind it is something else again — NetApp's pages name SuccessFactors — but that is invisible
+    from outside and does not matter, because the front end publishes everything needed.
+
+    The route in is `/sitemap.xml`, not the job search. Radancy does expose
+    `/search-jobs/results` as JSON, and it answers `hasJobs: true`, but `results` comes back empty
+    for every parameter combination tried: the real call needs a facet id minted per portal. The
+    sitemap needs none of that, and being XML it is a stabler contract than scraped markup.
+
+    Every job URL carries the three fields worth having:
+
+        /job/bengaluru/software-engineer-full-stack-engineer/27600/101302054944
+              ^city     ^title slug                          ^org  ^req id
+
+    So the title is a de-slugified guess, not the posted title — "Sr. Software Engineer" arrives
+    as "Sr Software Engineer" and punctuation is gone. Good enough for the title gate, which
+    matches on words, but it is marked `weak` so a real title from any other source wins and is
+    never overwritten by this guess.
+
+    One trap this platform sets: NetApp abbreviates manager as "mgr" in slugs, so
+    "mgr-software-engineer" de-slugifies to "Mgr Software Engineer" and sails past an
+    `exclude_titles` list containing only "manager". The profile needs "mgr" as its own entry, the
+    same way SMTS and PMTS each need one.
+    """
+    host = board["host"]
+    rows: list[dict] = []
+    sitemap = _get_text(f"https://{host}/sitemap.xml", ua)
+    urls = re.findall(r"<loc>([^<]+)</loc>", sitemap)
+    if not urls:
+        raise RuntimeError(f"radancy: {host}/sitemap.xml returned no <loc> entries")
+
+    job_rx = re.compile(r"^https?://[^/]+/job/([^/]+)/([^/]+)/(\d+)/(\d+)/?$")
+    seen: set[str] = set()
+    for u in urls:
+        m = job_rx.match(u.strip())
+        if not m:
+            continue
+        city, slug, _org, rid = m.groups()
+        if rid in seen:
+            continue
+        seen.add(rid)
+        rows.append({
+            "company": board["company"],
+            "title": slug.replace("-", " ").strip().title(),
+            "location": city.replace("-", " ").strip().title(),
+            "url": u.strip(),
+            "source": "radancy",
+            "req_id": rid,
+            "posted_at": "",
+            "description": "",
+            # Both are derived from URL segments, so let anything better win. `--enrich` fetches
+            # the posting page for JD text, and these pages are server-rendered.
+            "weak": ("title", "location"),
+        })
+    if not rows:
+        raise RuntimeError(
+            f"radancy: {host}/sitemap.xml had {len(urls)} URLs but none matched the "
+            "/job/<city>/<slug>/<org>/<id> shape — the URL scheme has probably changed")
+    return rows
+
+
 FETCHERS = {
     "greenhouse": fetch_greenhouse,
     "ashby": fetch_ashby,
     "lever": fetch_lever,
     "avature": fetch_avature,
+    "radancy": fetch_radancy,
     "workday": fetch_workday,
     "oracle": fetch_oracle,
     "atlassian": fetch_atlassian,
@@ -806,10 +883,17 @@ def jd_from_api(source: str, url: str, req_id: str, ua: str) -> str:
 def enrich(ua: str, limit: int, verbose: bool = False) -> None:
     """Fetch the posting page for stored jobs that have no JD text, and keep what parses."""
     with store.connect() as conn:
+        # Newest first, and that ordering is the whole point. Without it SQLite returns rowid
+        # order, so the oldest reqs are tried every run — and the oldest are precisely the ones
+        # that can never succeed: the JS-shell careers pages at Meta, Microsoft and Apple, plus
+        # URLs that 404. They consumed the entire budget while reqs fetched minutes earlier
+        # waited, which is how all seven NetApp reqs reached the scorer with no JD text and were
+        # judged on their titles alone.
         rows = conn.execute(
             "SELECT key, company, title, url, source, req_id FROM jobs "
             "WHERE still_open = 1 AND url IS NOT NULL "
-            "AND (description IS NULL OR length(description) < ?) LIMIT ?",
+            "AND (description IS NULL OR length(description) < ?) "
+            "ORDER BY first_seen DESC LIMIT ?",
             (JD_MIN_CHARS, limit),
         ).fetchall()
 
