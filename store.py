@@ -66,7 +66,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 
     first_seen   TEXT NOT NULL,
     last_seen    TEXT NOT NULL,
-    still_open   INTEGER NOT NULL DEFAULT 1
+    still_open   INTEGER NOT NULL DEFAULT 1,
+    -- Consecutive polls in which the board did not return this req. Closure used to happen on
+    -- the first miss, which wrote off 103 reqs — and at least two of those were provably still
+    -- live, answering HTTP 200 while recorded as pulled. A single absence is weak evidence: the
+    -- Workday and Oracle India facets are moving windows, so a req can drop out of a filtered
+    -- read without being withdrawn. Reset to 0 every time the req comes back.
+    misses       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status  ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_score   ON jobs(score DESC);
@@ -107,7 +113,20 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """
+    Add columns that CREATE TABLE IF NOT EXISTS cannot add to a database that already exists.
+    Kept deliberately dumb — read the existing columns, add what is absent — because the store
+    is a single local file with no deployment story, and a migration framework would be more
+    machinery than the whole project.
+    """
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)")}
+    if "misses" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN misses INTEGER NOT NULL DEFAULT 0")
 
 
 def job_key(company: str, title: str, url: str = "", req_id: str = "") -> str:
@@ -158,8 +177,10 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> bool:
             # Weak values defer to whatever is already stored; strong values overwrite.
             sets.append(f"{c} = COALESCE({c}, ?)" if c in weak else f"{c} = ?")
             vals.append(v)
+        # `misses = 0` is what makes the consecutive-absence rule actually consecutive: a req
+        # that flickers out of one poll and back into the next must not keep its strike.
         conn.execute(
-            f"UPDATE jobs SET {', '.join(sets + ['last_seen = ?', 'still_open = 1'])} "
+            f"UPDATE jobs SET {', '.join(sets + ['last_seen = ?', 'still_open = 1', 'misses = 0'])} "
             "WHERE key = ?",
             [*vals, ts, key],
         )
@@ -201,22 +222,60 @@ def set_score(conn, key: str, score: int, reason: str, lane=None, speed_note=Non
     )
 
 
-def mark_closed(conn, source: str, seen_keys: set[str]) -> int:
+MISS_LIMIT = 3          # consecutive absences before a req is written off
+
+
+def mark_closed(conn, source: str, seen_keys: set[str], miss_limit: int = MISS_LIMIT,
+                verify=None) -> tuple[int, int]:
     """
-    Flag reqs from `source` that this run did not see. A req vanishing from a board usually
-    means it was filled or pulled, which is itself worth knowing — so still_open goes to 0
-    but the row stays, and a status you already advanced is left alone.
+    Record that this run did not see certain reqs from `source`, and close only the ones that
+    have now been absent `miss_limit` polls in a row. Returns (closed, pending).
+
+    Closing on the first miss was wrong and measurably so. It wrote off 103 reqs, and two of
+    them — a JP Morgan observability role and a Visa SDE — were still answering HTTP 200 while
+    recorded as pulled. One absence is weak evidence, because `fetch.py` narrows the big boards
+    to India server-side and those facets are moving windows: a req can fall out of a filtered
+    read, or a board can time out mid-run, without anything happening to the job.
+
+    Three consecutive absences is strong evidence. Anything that reappears resets the counter,
+    so a flickering req never accumulates its way to closed.
+
+    `verify(url) -> bool | None` is the second gate, used only at the limit: True keeps the req
+    open regardless of the count, False closes it immediately, None means "no answer" and lets
+    the counter decide. fetch.py passes an HTTP probe, because a posting URL returning 404 or
+    410 is the one piece of direct evidence available — that is the board saying the req is
+    gone, rather than us inferring it from a filtered list.
     """
     rows = conn.execute(
-        "SELECT key FROM jobs WHERE source = ? AND still_open = 1", (source,)
+        "SELECT key, url, misses FROM jobs WHERE source = ? AND still_open = 1", (source,)
     ).fetchall()
-    gone = [r["key"] for r in rows if r["key"] not in seen_keys]
-    if gone:
+    missing = [r for r in rows if r["key"] not in seen_keys]
+    if not missing:
+        return 0, 0
+
+    to_close, to_bump, reprieved = [], [], []
+    for r in missing:
+        n = (r["misses"] or 0) + 1
+        if n < miss_limit:
+            to_bump.append((n, r["key"]))
+            continue
+        live = verify(r["url"]) if (verify and r["url"]) else None
+        if live is True:
+            # Still being served. Park the counter one below the limit so it closes on the next
+            # miss if the URL later goes away, rather than probing from scratch every run.
+            reprieved.append((miss_limit - 1, r["key"]))
+        else:
+            to_close.append((r["key"],))
+
+    if to_bump:
+        conn.executemany("UPDATE jobs SET misses = ? WHERE key = ?", to_bump)
+    if reprieved:
+        conn.executemany("UPDATE jobs SET misses = ? WHERE key = ?", reprieved)
+    if to_close:
         conn.executemany(
-            "UPDATE jobs SET still_open = 0, last_seen = last_seen WHERE key = ?",
-            [(k,) for k in gone],
+            "UPDATE jobs SET still_open = 0, last_seen = last_seen WHERE key = ?", to_close,
         )
-    return len(gone)
+    return len(to_close), len(to_bump) + len(reprieved)
 
 
 def unscored(conn, limit: int = 50) -> list[sqlite3.Row]:

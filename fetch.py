@@ -64,6 +64,13 @@ WORKDAY_INDIA_PAGES = 12  # once the India facet is applied the whole set fits i
 # Avature offers no location filter, so the whole board is read: 20 per page, and EA runs ~340
 # reqs. The ceiling is generous because stopping early silently loses reqs rather than erroring.
 AVATURE_PAGES = 30
+# Shorter than TIMEOUT: a closure probe runs once per absent req and a slow host should not
+# hold up the run. No answer just leaves the miss counter to decide.
+CLOSURE_TIMEOUT = 10
+# Instahyre pins its page size at 35 whatever you ask for, and carries ~12,900 jobs. 20 pages is
+# 700 of the newest reqs across the software functions — enough to catch what appeared since the
+# last run without draining a board whose tail is mostly staffing posts.
+INSTAHYRE_PAGES = 20
 ORACLE_PAGES = 24        # 25 reqs per page, per location — Uber has to be read unfiltered
 
 
@@ -98,6 +105,52 @@ def _get_text(url: str, ua: str) -> str:
     )
     with urllib.request.urlopen(req, timeout=TIMEOUT, context=_TLS) as r:
         return r.read().decode("utf-8", "replace")
+
+
+def url_is_live(url: str, ua: str) -> bool | None:
+    """
+    Ask the posting URL directly whether the req still exists. True = still served,
+    False = definitely gone, None = no usable answer, decide some other way.
+
+    This is the only direct evidence available about closure. Everything else is inference from
+    a board's filtered list, and that inference has been wrong: two reqs written off as pulled
+    were answering 200 the whole time.
+
+    Read the status codes carefully, because most of them say nothing about the job:
+      404 / 410  the posting is gone. The one real "closed" signal.
+      200        still being served.
+      403 / 429  the site is blocking a script. Says nothing about the req.
+      5xx        their problem, not an answer.
+    A HEAD is enough and avoids pulling the body, but plenty of career sites answer 405 to
+    HEAD, so fall back to a GET on anything inconclusive.
+
+    Known limitation, and it is the safe direction: some platforms soft-404. Greenhouse answers
+    200 for a job id that never existed, serving a 280 KB fallback board page. So a dead
+    Greenhouse req reads as live here and the probe grants it a reprieve — costing one extra
+    poll before the miss counter closes it. Deliberately not fixed by sniffing the body for
+    "no longer available": that string varies per platform and per locale, and a wrong guess
+    there closes live reqs, which is the failure this whole function exists to prevent.
+    """
+    def probe(method: str) -> int | None:
+        req = urllib.request.Request(
+            url, method=method,
+            headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml"})
+        try:
+            with urllib.request.urlopen(req, timeout=CLOSURE_TIMEOUT, context=_TLS) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+        except Exception:  # noqa: BLE001  — DNS, TLS, timeout: no answer either way
+            return None
+
+    code = probe("HEAD")
+    if code in (405, 501, None):
+        code = probe("GET")
+    if code in (404, 410):
+        return False
+    if code is not None and 200 <= code < 400:
+        return True
+    return None
 
 
 def _post(url: str, payload: dict, ua: str) -> dict:
@@ -663,6 +716,83 @@ def fetch_avature(board: dict, ua: str) -> list[dict]:
     return out
 
 
+def fetch_instahyre(board: dict, ua: str) -> list[dict]:
+    """
+    Instahyre, and the first aggregator in here rather than an employer's own board. That
+    difference matters in two ways.
+
+    First, `company` comes from each row's `employer.company_name`, not from the board entry.
+    Every other fetcher returns reqs for one company; this one returns reqs for hundreds, which
+    is the point — it reaches employers that are nowhere in config/seed.yaml. The board's own
+    name ("Instahyre") never appears on a req.
+
+    Second, it is allowed. Its robots.txt is `User-agent: *` with no Disallow at all, and
+    `/api/v1/job_search` is the same public JSON endpoint its own site reads. That is not true of
+    the obvious alternatives: Naukri's robots.txt names Claude-User, claudebot and
+    Claude-SearchBot explicitly under `Disallow: /`, and Cutshort and Wellfound both disallow the
+    job-detail paths. Those three are therefore deliberately not polled, and should not be added.
+
+    Volume is the real design problem, not access. The board carries ~12,900 live jobs, ~4,100
+    under Backend Development alone, and roughly 39% of those clear the title gate — enough to
+    bury the digest and spend a fortune in scoring calls on reqs the comp floor would reject
+    anyway. So:
+
+      - only the software job functions are requested, via `job_functions`
+      - paging stops at INSTAHYRE_PAGES, newest first, rather than draining the board
+      - `limit` is pinned at 35 because the API ignores anything larger
+
+    Quality skews lower than an employer board: expect staffing firms and unfunded startups,
+    which is what `exclusions.companies` in the profile is for. The IT-services names are already
+    listed there; the agency names this surfaces have been added alongside them.
+    """
+    # The ids must be repeated as separate params. A comma-joined `job_functions=10,1,76` is an
+    # HTTP 400, which is easy to misread as the endpoint being closed off rather than the
+    # argument being malformed.
+    funcs = str(board.get("job_functions") or "10,1,76")   # Backend, Full-Stack, Other Software
+    qs = "&".join(f"job_functions={f.strip()}" for f in funcs.split(",") if f.strip())
+    out: list[dict] = []
+    seen: set[str] = set()
+    for page in range(INSTAHYRE_PAGES):
+        url = (f"https://www.instahyre.com/api/v1/job_search"
+               f"?limit=35&offset={page * 35}&{qs}")
+        try:
+            data = _get(url, ua)
+        except urllib.error.HTTPError:
+            if page == 0:
+                raise
+            break
+        rows = (data or {}).get("objects") or []
+        if not rows:
+            break
+        for j in rows:
+            rid = str(j.get("id") or "")
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            emp = j.get("employer") or {}
+            company = (emp.get("company_name") or "").strip()
+            if not company:
+                continue          # without an employer name the req cannot be judged or gated
+            out.append({
+                "company": company,
+                "title": (j.get("title") or "").strip(),
+                # Comma-separated and genuinely mixed: "Bangalore,Gurgaon", "Work From Home",
+                # and occasionally "United States (USA)". Left as-is for the geo gate to read.
+                "location": (j.get("locations") or "").strip(),
+                "url": j.get("public_url") or "",
+                "source": "instahyre",
+                "req_id": f"ih-{rid}",   # namespaced: a bare numeric id would collide with an
+                                         # ATS req id and merge two unrelated jobs
+                "posted_at": "",
+                "description": "",
+            })
+        time.sleep(0.3)
+    if not out:
+        raise RuntimeError("instahyre: job_search returned no usable rows — check whether the "
+                           "API shape or the job_functions ids have changed")
+    return out
+
+
 def fetch_radancy(board: dict, ua: str) -> list[dict]:
     """
     Radancy (formerly TalentBrew), the career-site front end NetApp and Intuit both run. The ATS
@@ -732,6 +862,7 @@ FETCHERS = {
     "lever": fetch_lever,
     "avature": fetch_avature,
     "radancy": fetch_radancy,
+    "instahyre": fetch_instahyre,
     "workday": fetch_workday,
     "oracle": fetch_oracle,
     "atlassian": fetch_atlassian,
@@ -880,6 +1011,60 @@ def jd_from_api(source: str, url: str, req_id: str, ua: str) -> str:
     return ""
 
 
+def recheck_closed(ua: str, min_score: int, limit: int) -> None:
+    """
+    Re-probe reqs already written off and reopen the ones still being served.
+
+    Needed because closure used to happen on a single absence, which wrote off 103 reqs here —
+    ten of them scoring 7 or above, including a 9/10. Two were confirmed by hand to be
+    answering HTTP 200 while recorded as pulled. The miss counter stops that happening again,
+    but it does nothing for the backlog, so this cleans it up once.
+
+    Reopened reqs come back with `misses` one below the limit rather than zero. If a req really
+    is gone and only looks live because its platform soft-404s (Greenhouse does exactly this),
+    the next poll misses it and closes it again. The backlog therefore self-corrects instead of
+    permanently resurrecting dead reqs.
+
+    Scoped by score because reopening is not free: every recovered req reappears in the digest.
+    A 2/10 that is still live is noise, so the default only revisits reqs that scored 6+ or were
+    never scored at all.
+    """
+    with store.connect() as conn:
+        rows = conn.execute(
+            "SELECT key, company, title, url, score FROM jobs "
+            "WHERE still_open = 0 AND status IN ('new','scored') AND url IS NOT NULL "
+            "AND (score IS NULL OR score >= ?) "
+            "ORDER BY score IS NULL DESC, score DESC LIMIT ?",
+            (min_score, limit),
+        ).fetchall()
+        print(f"re-probing {len(rows)} closed req(s) scoring {min_score}+ or unscored, "
+              f"{ENRICH_WORKERS} at a time")
+        if not rows:
+            return
+
+        with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as ex:
+            verdicts = list(ex.map(lambda r: (r, url_is_live(r["url"], ua)), rows))
+
+        back = 0
+        for r, live in verdicts:
+            s = r["score"] if r["score"] is not None else "?"
+            if live is True:
+                conn.execute(
+                    "UPDATE jobs SET still_open = 1, misses = ?, notes = "
+                    "TRIM(COALESCE(notes || ' | ', '') || ?) WHERE key = ?",
+                    (store.MISS_LIMIT - 1,
+                     f"reopened {store.now()[:10]}: posting URL still live after being "
+                     "closed on a single missed poll", r["key"]),
+                )
+                back += 1
+                print(f"  REOPENED  {s}/10  {r['company']:<17} {r['title'][:44]}")
+            elif live is False:
+                print(f"  gone      {s}/10  {r['company']:<17} {r['title'][:44]}")
+            else:
+                print(f"  no answer {s}/10  {r['company']:<17} {r['title'][:44]}")
+        print(f"\nreopened {back}/{len(rows)}")
+
+
 def enrich(ua: str, limit: int, verbose: bool = False) -> None:
     """Fetch the posting page for stored jobs that have no JD text, and keep what parses."""
     with store.connect() as conn:
@@ -980,6 +1165,13 @@ def main() -> int:
                     help="fetch posting pages for stored jobs missing JD text")
     ap.add_argument("--enrich-only", action="store_true")
     ap.add_argument("--enrich-limit", type=int, default=30)
+    ap.add_argument("--no-verify-closure", action="store_true",
+                    help="skip the HTTP check on reqs about to be closed, and let the "
+                         "consecutive-miss counter decide alone")
+    ap.add_argument("--recheck-closed", action="store_true",
+                    help="re-probe already-closed reqs and reopen any still being served")
+    ap.add_argument("--recheck-min-score", type=int, default=6)
+    ap.add_argument("--recheck-limit", type=int, default=60)
     args = ap.parse_args()
 
     profile = yaml.safe_load(PROFILE.read_text())
@@ -990,6 +1182,10 @@ def main() -> int:
 
     if args.enrich_only:
         enrich(ua, args.enrich_limit)
+        return 0
+
+    if args.recheck_closed:
+        recheck_closed(ua, args.recheck_min_score, args.recheck_limit)
         return 0
 
     postings: list[dict] = []
@@ -1064,16 +1260,22 @@ def main() -> int:
         for p in postings:
             k = store.job_key(p["company"], p["title"], p.get("url", ""), p.get("req_id", ""))
             by_source.setdefault(p["source"], set()).add(k)
-        closed = 0
+        closed = pending = 0
         if not args.seed_only and not only:
+            probe = (lambda u: None) if args.no_verify_closure else (
+                lambda u: url_is_live(u, ua))
             for src, keys in by_source.items():
                 if src != "seed":          # a seed list going quiet means nothing
-                    closed += store.mark_closed(conn, src, keys)
+                    c, p = store.mark_closed(conn, src, keys, verify=probe)
+                    closed += c
+                    pending += p
         store.log_run(
             conn, "fetch", fetched=len(postings), new_jobs=new,
-            detail={"kept": len(kept), "dropped": len(dropped), "closed": closed},
+            detail={"kept": len(kept), "dropped": len(dropped), "closed": closed,
+                    "pending_closure": pending},
         )
-    print(f"\nwrote: {new} new, {len(kept) - new} refreshed, {closed} marked closed")
+    print(f"\nwrote: {new} new, {len(kept) - new} refreshed, {closed} marked closed, "
+          f"{pending} absent but kept open")
 
     if args.enrich:
         enrich(ua, args.enrich_limit)

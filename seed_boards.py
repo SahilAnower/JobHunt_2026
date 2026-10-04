@@ -148,7 +148,7 @@ def classify(url: str):
 # Platforms whose public JSON API fetch.py can read. `own_site` and `rippling` have no
 # documented public job-board API.
 POLLABLE = {"greenhouse", "ashby", "lever", "smartrecruiters", "workday", "oracle", "atlassian",
-            "avature", "radancy"}
+            "avature", "radancy", "instahyre"}
 
 # Some companies front their ATS with their own careers domain, so the URL hides the board.
 # These are not guesses: each was confirmed by a live request on 2026-09-19 (HTTP 200 and a
@@ -323,6 +323,15 @@ KNOWN = {
                        "Software Engineer seats in Bengaluru including Go/C++/Python/Kubernetes "
                        "and Cloud/Distributed Java. Needs certifi: its chain fails macOS's "
                        "default store"},
+    # 2026-10-04. An aggregator, so unlike every other entry here its reqs carry their own
+    # employer names and it has no single careers URL. Polled because 57 employer boards is the
+    # real ceiling on supply at SDE I-II, not the filtering.
+    "Instahyre": {"platform": "instahyre", "job_functions": "10,1,76",
+                  "verified": "2026-10-04",
+                  "note": "~12,900 live jobs, ~4,100 Backend Development, ~39% clearing the "
+                          "title gate; capped at 20 pages/run because the API pins page size "
+                          "at 35 and the tail is mostly staffing posts"},
+
     "Intuit": {"platform": "radancy", "host": "jobs.intuit.com", "verified": "2026-09-29",
                "note": "559 jobs, 30 India, 0 in-band — Intuit India is banded at Staff, Sr Staff "
                        "and Principal, so nothing reaches SDE I-II. Polled for churn, not supply"},

@@ -226,13 +226,24 @@ drafting:
 exclusions:
   # Dropped before anything else, by company name. Staffing firms, ex-employers, anywhere you
   # would not go.
+  #
+  # Keep this list long if you poll an aggregator. On an employer board the company is implied by
+  # which board you polled, so a short list is fine. An aggregator like Instahyre returns reqs
+  # from hundreds of employers, and agencies dominate the volume — one of them posted 405
+  # openings in a single snapshot. Names worth having from the Indian market: the IT-services
+  # majors (TCS, Infosys, Wipro, Accenture, Cognizant, Capgemini, LTIMindtree, Tech Mahindra,
+  # HCLTech, Mphasis), the recruitment agencies (Randstad, Adecco, ManpowerGroup, Hays, Michael
+  # Page, ABC Consultants, CIEL HR, Careernet, Xpheno, TeamLease, Quess) and the project-delivery
+  # shops (EPAM, Luxoft, Nagarro, GlobalLogic, Thoughtworks, Publicis Sapient, Synechron).
   companies:
     - Example Consultancy
     - Example Staffing
   # Not read by the code — kept as a note to yourself about categories to skip while curating
-  # config/seed.yaml.
+  # config/seed.yaml. Note the asymmetry: `industries` is prose for the scorer, so it only
+  # influences a score. `companies` above is the hard gate that actually drops a req.
   industries:
     - staffing, contract-to-hire, third-party payroll, agency placement
+    - unfunded or pre-seed startups with no disclosed funding
     - client-project delivery rather than owning a product
 
 targets:
