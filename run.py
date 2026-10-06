@@ -30,6 +30,7 @@ STAGES = [
     ("fetch",  [PY, "fetch.py", "--seed", "--enrich"], "poll the ATS boards, reload the seed list, recover JD text"),
     ("score",  [PY, "score.py"],                       "score everything unscored against the profile"),
     ("draft",  [PY, "draft.py"],                       "write referral drafts for anything above the bar"),
+    ("tailor", [PY, "tailor.py"],                      "tailor the resume per req, skipping the aggregator"),
     ("digest", [PY, "digest.py"],                      "write today's digest"),
 ]
 
@@ -49,10 +50,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-draft", action="store_true")
+    ap.add_argument("--no-tailor", action="store_true")
     ap.add_argument("--only", action="append", choices=[s[0] for s in STAGES])
     args = ap.parse_args()
 
-    stages = [s for s in STAGES if not (args.no_draft and s[0] == "draft")]
+    stages = [s for s in STAGES
+              if not (args.no_draft and s[0] == "draft")
+              and not (args.no_tailor and s[0] == "tailor")]
     if args.only:
         stages = [s for s in stages if s[0] in args.only]
 
@@ -66,12 +70,12 @@ def main() -> int:
     # does not make `claude` error cleanly: some calls exit 1, others hang until their timeout,
     # so score and draft used to burn ~25 minutes discovering it one call at a time. fetch
     # needs no credentials, so still run it — a digest built on a stale score beats no digest.
-    if any(s[0] in ("score", "draft") for s in stages):
+    if any(s[0] in ("score", "draft", "tailor") for s in stages):
         import claudecall
         ok, msg = claudecall.preflight()
         if not ok:
             print(f"claude is not usable: {msg}\n")
-            stages = [s for s in stages if s[0] not in ("score", "draft")]
+            stages = [s for s in stages if s[0] not in ("score", "draft", "tailor")]
             print("Skipping score and draft. Running "
                   f"{', '.join(s[0] for s in stages) or 'nothing'} instead; re-run once "
                   "`claude` works to score and draft what today's fetch brought in.\n")
