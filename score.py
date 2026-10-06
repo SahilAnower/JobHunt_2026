@@ -27,16 +27,11 @@ import sys
 import textwrap
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:
-    sys.exit("PyYAML required: pip install pyyaml")
-
 import claudecall
+import jobprofile
 import store
 
 ROOT = Path(__file__).resolve().parent
-PROFILE = ROOT / "config" / "profile.yaml"
 JD_CHARS = 2500          # per req, inside the prompt
 # Was 420s, chosen when batches ran one at a time. Batches now run concurrently, so a stuck
 # call no longer blocks the others and there is no reason to wait this long for one of them.
@@ -175,8 +170,8 @@ def main() -> int:
     ap.add_argument("--batch", type=int)
     args = ap.parse_args()
 
-    profile = yaml.safe_load(PROFILE.read_text())
-    rt = profile.get("runtime", {})
+    profile = jobprofile.load()
+    rt = jobprofile.runtime(profile)
     claude_bin = rt.get("claude_bin", "claude")
     batch_size = args.batch or rt.get("max_score_batch", 12)
 

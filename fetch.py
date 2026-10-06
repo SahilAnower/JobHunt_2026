@@ -45,10 +45,10 @@ try:
 except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
 
+import jobprofile
 import store
 
 ROOT = Path(__file__).resolve().parent
-PROFILE = ROOT / "config" / "profile.yaml"
 BOARDS = ROOT / "config" / "boards.yaml"
 SEED = ROOT / "config" / "seed.yaml"
 
@@ -1174,9 +1174,9 @@ def main() -> int:
     ap.add_argument("--recheck-limit", type=int, default=60)
     args = ap.parse_args()
 
-    profile = yaml.safe_load(PROFILE.read_text())
+    profile = jobprofile.load()
     filters, geo = profile["filters"], profile["geo"]
-    ua = " ".join((profile.get("runtime", {}).get("user_agent") or "jobhunt/1.0").split())
+    ua = jobprofile.user_agent(profile)
     excluded = {c.lower() for c in (profile.get("exclusions", {}).get("companies") or [])}
     only = {c for c in (args.company or [])} or None
 

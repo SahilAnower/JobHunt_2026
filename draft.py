@@ -25,16 +25,11 @@ import sys
 from datetime import date
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:
-    sys.exit("PyYAML required: pip install pyyaml")
-
 import claudecall
+import jobprofile
 import store
 
 ROOT = Path(__file__).resolve().parent
-PROFILE = ROOT / "config" / "profile.yaml"
 OUTBOX = ROOT / "outbox"
 # Was 300s and the drafts ran one at a time, so six stuck calls could cost half an hour.
 # They now run concurrently, which makes a shorter ceiling per call affordable.
@@ -187,8 +182,8 @@ def main() -> int:
     ap.add_argument("--redraft", action="store_true", help="draft again even if one exists")
     args = ap.parse_args()
 
-    profile = yaml.safe_load(PROFILE.read_text())
-    rt = profile.get("runtime", {})
+    profile = jobprofile.load()
+    rt = jobprofile.runtime(profile)
     threshold = args.min_score or rt.get("score_threshold", 7)
     claude_bin = rt.get("claude_bin", "claude")
 

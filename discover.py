@@ -33,10 +33,10 @@ except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
 
 import fetch
+import jobprofile
 
 ROOT = Path(__file__).resolve().parent
 BOARDS = ROOT / "config" / "boards.yaml"
-PROFILE = ROOT / "config" / "profile.yaml"
 
 # Where to look per company. A search-results page is far more productive than a landing page,
 # because that is where the apply links live.
@@ -151,8 +151,8 @@ def main() -> int:
     ap.add_argument("--merge", action="store_true", help="write findings into boards.yaml")
     args = ap.parse_args()
 
-    profile = yaml.safe_load(PROFILE.read_text())
-    ua = " ".join(profile["runtime"]["user_agent"].split())
+    profile = jobprofile.load()
+    ua = jobprofile.user_agent(profile)
 
     boards = yaml.safe_load(BOARDS.read_text())["boards"]
     by_company = {b["company"]: b for b in boards}

@@ -30,16 +30,11 @@ import sys
 from datetime import date
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:
-    sys.exit("PyYAML required: pip install pyyaml")
-
 import claudecall
+import jobprofile
 import store
 
 ROOT = Path(__file__).resolve().parent
-PROFILE = ROOT / "config" / "profile.yaml"
 RESUME = ROOT / "config" / "resume.md"
 OUT = ROOT / "tailored"
 CALL_TIMEOUT = 240
@@ -195,8 +190,8 @@ def main() -> int:
               "and fill it in")
         return 1
     master = RESUME.read_text()
-    profile = yaml.safe_load(PROFILE.read_text())
-    rt = profile.get("runtime", {})
+    profile = jobprofile.load()
+    rt = jobprofile.runtime(profile)
     threshold = args.min_score or rt.get("score_threshold", 7)
     claude_bin = rt.get("claude_bin", "claude")
 

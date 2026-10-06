@@ -22,15 +22,10 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:
-    sys.exit("PyYAML required: pip install pyyaml")
-
+import jobprofile
 import store
 
 ROOT = Path(__file__).resolve().parent
-PROFILE = ROOT / "config" / "profile.yaml"
 DIGEST_DIR = ROOT / "digest"
 
 
@@ -49,7 +44,7 @@ def link(job) -> str:
 
 
 def build(conn, profile: dict) -> str:
-    rt = profile.get("runtime", {})
+    rt = jobprofile.runtime(profile)
     threshold = rt.get("score_threshold", 7)
     today = date.today().isoformat()
     L: list[str] = [f"# jobhunt digest — {today}", ""]
@@ -213,7 +208,7 @@ def main() -> int:
     ap.add_argument("--stdout", action="store_true")
     args = ap.parse_args()
 
-    profile = yaml.safe_load(PROFILE.read_text())
+    profile = jobprofile.load()
     with store.connect() as conn:
         text = build(conn, profile)
         store.log_run(conn, "digest")
