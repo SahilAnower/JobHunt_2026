@@ -179,7 +179,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--min-score", type=int)
     ap.add_argument("--key", action="append", help="tailor these job keys regardless of score")
-    ap.add_argument("--limit", type=int, default=6)
+    ap.add_argument("--limit", type=int, default=6,
+                    help="how many resumes to tailor (default: %(default)s)")
     ap.add_argument("--retailor", action="store_true", help="overwrite an existing file")
     ap.add_argument("--include-instahyre", action="store_true",
                     help="tailor aggregator reqs too, which mostly have no JD text")

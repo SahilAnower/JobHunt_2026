@@ -173,7 +173,8 @@ def main() -> int:
     ap.add_argument("--min-score", type=int)
     ap.add_argument("--key", action="append", help="draft these job keys regardless of score")
     ap.add_argument("--kind", default="referral", choices=["referral", "email"])
-    ap.add_argument("--limit", type=int, default=6)
+    ap.add_argument("--limit", type=int, default=6,
+                    help="how many drafts to write (default: %(default)s)")
     ap.add_argument("--redraft", action="store_true", help="draft again even if one exists")
     args = ap.parse_args()
 

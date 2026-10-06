@@ -160,9 +160,11 @@ def parse_scores(raw: str, n: int) -> list[dict]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="print the first prompt only")
-    ap.add_argument("--limit", type=int, default=100)
+    ap.add_argument("--limit", type=int, default=100,
+                    help="how many reqs to score (default: %(default)s)")
     ap.add_argument("--rescore", action="store_true")
-    ap.add_argument("--batch", type=int)
+    ap.add_argument("--batch", type=int,
+                    help="reqs per scoring call; defaults to runtime.max_score_batch (12)")
     args = ap.parse_args()
 
     profile = jobprofile.load()

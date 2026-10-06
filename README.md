@@ -138,6 +138,42 @@ If you edit `profile.yaml` in a way that changes the bar — a new `exclude_titl
 different `floor_lpa`, a rewritten `situation` — run `python3 score.py --rescore` so the
 existing pipeline is judged by the new rules.
 
+### Per-stage limits
+
+Each stage caps how much it does in one pass, so a single run cannot drain a board or spend an
+afternoon in `claude`. These are flags rather than profile keys on purpose: they are
+per-invocation decisions, not settings. `python3 <stage>.py --help` always prints the live
+value, so this table cannot drift out of date without the help text drifting too.
+
+| Stage | Flag | Default | What it caps |
+|---|---|---|---|
+| `fetch.py --enrich` | `--enrich-limit` | 30 | posting pages fetched for missing JD text |
+| `fetch.py --recheck-closed` | `--recheck-limit` | 60 | closed reqs re-probed |
+| `fetch.py --recheck-closed` | `--recheck-min-score` | 6 | score floor for re-probing (unscored always included) |
+| `score.py` | `--limit` | 100 | reqs scored |
+| `score.py` | `--batch` | `runtime.max_score_batch` (12) | reqs per `claude` call |
+| `draft.py` | `--limit` | 6 | drafts written |
+| `tailor.py` | `--limit` | 6 | resumes tailored |
+
+`draft.py` and `tailor.py` sit at 6 because each one is a separate `claude` call and you have
+to read every result by hand. `score.py` sits at 100 because twelve reqs share a call.
+
+Two related knobs *are* profile keys, under `runtime:`, because they tune every run and depend
+on the machine rather than on the day: `max_score_batch` (reqs per scoring call) and
+`max_parallel_claude` (how many `claude` calls run at once).
+
+### Running the tests
+
+```bash
+pip3 install -r requirements-dev.txt
+python3 -m pytest -q
+```
+
+The suite covers the pure logic only — the two gates, the location mergers, the dedupe
+identity, the closure counter, the reply parsers and the URL classifier. It opens no sockets,
+calls no `claude`, and never touches `jobhunt.db`: database tests get a throwaway file in a
+pytest temp directory. So it is safe to run at any time, including mid-pipeline.
+
 ### The daily loop
 
 Four steps, about ten minutes of your time:

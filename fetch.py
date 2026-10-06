@@ -1164,14 +1164,18 @@ def main() -> int:
     ap.add_argument("--enrich", action="store_true",
                     help="fetch posting pages for stored jobs missing JD text")
     ap.add_argument("--enrich-only", action="store_true")
-    ap.add_argument("--enrich-limit", type=int, default=30)
+    ap.add_argument("--enrich-limit", type=int, default=30,
+                    help="how many JD-less reqs to chase per run (default: %(default)s)")
     ap.add_argument("--no-verify-closure", action="store_true",
                     help="skip the HTTP check on reqs about to be closed, and let the "
                          "consecutive-miss counter decide alone")
     ap.add_argument("--recheck-closed", action="store_true",
                     help="re-probe already-closed reqs and reopen any still being served")
-    ap.add_argument("--recheck-min-score", type=int, default=6)
-    ap.add_argument("--recheck-limit", type=int, default=60)
+    ap.add_argument("--recheck-min-score", type=int, default=6,
+                    help="only re-probe closed reqs at or above this score, or unscored "
+                         "(default: %(default)s)")
+    ap.add_argument("--recheck-limit", type=int, default=60,
+                    help="how many closed reqs to re-probe (default: %(default)s)")
     args = ap.parse_args()
 
     profile = jobprofile.load()
