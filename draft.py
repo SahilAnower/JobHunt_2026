@@ -112,11 +112,6 @@ def build_prompt(profile: dict, job, kind: str) -> str:
     )
 
 
-def call_claude(prompt: str, claude_bin: str) -> str:
-    """Kept as a thin alias so --key one-offs and any other caller still work."""
-    return claudecall.call(prompt, claude_bin, CALL_TIMEOUT).strip()
-
-
 def split_sections(raw: str) -> tuple[str, str]:
     m = re.search(r"MESSAGE:\s*(.*?)(?:\n\s*RISKS:\s*(.*))?$", raw, re.S)
     if not m:
@@ -215,24 +210,23 @@ def main() -> int:
             print("\n(dry run — nothing written)")
             return 0
 
-        # One cheap call before spending real ones. An expired Midway session previously cost
-        # a CALL_TIMEOUT per draft before anything said why — five failures and 1086s for one
-        # written draft.
-        ok, msg = claudecall.preflight(claude_bin)
-        if not ok:
-            print(f"claude is not usable: {msg}")
-            return 1
-
-        # Drafts are independent, so write them concurrently. Files and outreach rows are
-        # created below on this thread: sqlite3 connections are not thread-safe, and keeping
-        # the writes serial also keeps the printed order stable.
+        # claudecall.run makes one cheap call before spending real ones. That matters here:
+        # an expired Midway session previously cost a CALL_TIMEOUT per draft before anything
+        # said why — five failures and 1086s for one written draft. Drafts are independent so
+        # they run concurrently; files and outreach rows are created below on this thread,
+        # because sqlite3 connections are not thread-safe and serial writes also keep the
+        # printed order stable.
         workers = rt.get("max_parallel_claude", claudecall.DEFAULT_WORKERS)
-        print(f"\ncalling claude for {len(todo)} draft(s), {workers} at a time", flush=True)
         try:
-            replies = claudecall.gather(
+            replies = claudecall.run(
                 [build_prompt(profile, r, args.kind) for r in todo],
                 claude_bin, CALL_TIMEOUT, workers,
+                announce=f"\ncalling claude for {len(todo)} draft(s), "
+                         f"{workers} at a time",
             )
+        except claudecall.Unusable as e:
+            print(f"claude is not usable: {e}")
+            return 1
         except claudecall.AuthExpired as e:
             print(f"aborted: {e}")
             return 1

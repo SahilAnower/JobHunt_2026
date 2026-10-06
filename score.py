@@ -130,11 +130,6 @@ def build_prompt(profile: dict, jobs: list) -> str:
     return "\n".join(lines)
 
 
-def call_claude(prompt: str, claude_bin: str) -> str:
-    """Kept as a thin alias so --key style one-offs and any caller still work."""
-    return claudecall.call(prompt, claude_bin, CALL_TIMEOUT)
-
-
 def parse_scores(raw: str, n: int) -> list[dict]:
     """
     Pull the JSON array out of the reply. Models sometimes wrap it in a fence or add a
@@ -198,23 +193,22 @@ def main() -> int:
             print("\n(dry run — claude not called)")
             return 0
 
-        # One cheap call first. An expired Midway session used to cost a full CALL_TIMEOUT per
-        # batch before anyone found out, which is most of how a score stage reached 420s
-        # having scored nothing.
-        ok, msg = claudecall.preflight(claude_bin)
-        if not ok:
-            print(f"claude is not usable: {msg}")
-            return 1
-
-        # Batches are independent, so run them together rather than one after another. The DB
-        # writes stay below, on this thread, because a sqlite3 connection is not thread-safe.
+        # claudecall.run makes one cheap call first, then runs the batches together. The cheap
+        # call matters: an expired Midway session used to cost a full CALL_TIMEOUT per batch
+        # before anyone found out, which is most of how a score stage reached 420s having
+        # scored nothing. Batches are independent so they parallelise; the DB writes stay
+        # below, on this thread, because a sqlite3 connection is not thread-safe.
         workers = rt.get("max_parallel_claude", claudecall.DEFAULT_WORKERS)
-        print(f"calling claude for {len(batches)} batch(es), {workers} at a time", flush=True)
         try:
-            replies = claudecall.gather(
+            replies = claudecall.run(
                 [build_prompt(profile, b) for b in batches],
                 claude_bin, CALL_TIMEOUT, workers,
+                announce=f"calling claude for {len(batches)} batch(es), "
+                         f"{workers} at a time",
             )
+        except claudecall.Unusable as e:
+            print(f"claude is not usable: {e}")
+            return 1
         except claudecall.AuthExpired as e:
             print(f"aborted: {e}")
             return 1

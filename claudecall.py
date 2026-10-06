@@ -112,6 +112,36 @@ def gather(prompts: list[str], claude_bin: str = "claude",
     return out
 
 
+class Unusable(RuntimeError):
+    """preflight said the CLI cannot be used. Fatal for the stage, before any work is spent."""
+
+
+def run(prompts: list[str], claude_bin: str = "claude", timeout: int = DEFAULT_TIMEOUT,
+        workers: int = DEFAULT_WORKERS, announce: str = "",
+        ) -> list[tuple[str | None, Exception | None]]:
+    """
+    preflight, then gather. The three stages — score, draft, tailor — each wired up this same
+    pair by hand, with the same two early returns, so a change to the abort policy had to be
+    made in three places or not at all.
+
+    Raises Unusable when the CLI is not usable, and lets AuthExpired propagate out of gather.
+    Both mean "abandon the stage". Per-item errors still come back inside the result list,
+    because one timed-out batch must not cost the ones that succeeded.
+
+    `announce` is printed only once preflight has passed. It is a parameter rather than a line
+    in the caller because the order matters on the failing path: printing "calling claude for
+    6 draft(s)" and then "claude is not usable" would claim work that never started. Each
+    stage words it differently (batch(es), draft(s), resume(s)) and two of them want a leading
+    blank line, so the text stays with the caller and only the timing moves here.
+    """
+    ok, msg = preflight(claude_bin)
+    if not ok:
+        raise Unusable(msg)
+    if announce:
+        print(announce, flush=True)
+    return gather(prompts, claude_bin, timeout, workers)
+
+
 if __name__ == "__main__":
     ok, msg = preflight()
     print(f"claude: {'ok' if ok else 'NOT USABLE'} — {msg}")

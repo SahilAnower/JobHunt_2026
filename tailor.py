@@ -239,18 +239,17 @@ def main() -> int:
             print("\n(dry run — nothing written)")
             return 0
 
-        ok, msg = claudecall.preflight(claude_bin)
-        if not ok:
-            print(f"claude is not usable: {msg}")
-            return 1
-
         workers = rt.get("max_parallel_claude", claudecall.DEFAULT_WORKERS)
-        print(f"\ncalling claude for {len(todo)} resume(s), {workers} at a time", flush=True)
         try:
-            replies = claudecall.gather(
+            replies = claudecall.run(
                 [build_prompt(master, profile, r) for r in todo],
                 claude_bin, CALL_TIMEOUT, workers,
+                announce=f"\ncalling claude for {len(todo)} resume(s), "
+                         f"{workers} at a time",
             )
+        except claudecall.Unusable as e:
+            print(f"claude is not usable: {e}")
+            return 1
         except claudecall.AuthExpired as e:
             print(f"aborted: {e}")
             return 1
