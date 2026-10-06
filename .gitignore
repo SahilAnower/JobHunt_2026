@@ -17,3 +17,10 @@ contacts.md
 __pycache__/
 *.pyc
 .pytest_cache/
+# Agent working notes: plans, reviews, verification logs and task reports. Useful while a piece
+# of work is in flight and noise afterwards, and they quote freely from the gitignored config
+# and database, so they stay out of history.
+.agents/
+# Scratch worktrees, e.g. the one the quality pass ran in. Created with
+# `git worktree add .worktrees/<name>` and removed with `git worktree remove`.
+.worktrees/
