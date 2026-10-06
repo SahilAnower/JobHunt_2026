@@ -16,3 +16,4 @@ tailored/
 contacts.md
 __pycache__/
 *.pyc
+.pytest_cache/

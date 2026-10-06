@@ -1,0 +1,10 @@
+# Test-only. requirements.txt stays the honest runtime list: the pipeline itself needs PyYAML
+# and certifi, nothing else. Nothing in tests/ is imported by the pipeline, so a machine that
+# only runs the daily job never needs this file.
+#
+#   pip3 install -r requirements-dev.txt
+#   python3 -m pytest -q
+#
+# 7.0 is the floor because `pythonpath` in pytest.ini arrived in that release, and without it
+# every `import fetch` in tests/ fails.
+pytest>=7.0
