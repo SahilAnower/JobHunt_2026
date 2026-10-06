@@ -236,7 +236,23 @@ def geo_verdict(location: str, geo: dict) -> tuple[str | None, str]:
         return (None, "no location") if geo.get("require_india_signal") else ("unclear", "empty")
 
     def hit(key):
-        return next((t for t in _terms(geo, key) if t in loc), None)
+        # Whole-word, not substring. A plain `t in loc` matched "india" inside "Indianapolis"
+        # and "Indiana", so a US Midwest req read as an India one — and "Remote - Indiana" read
+        # as the most attractive bucket there is, remote-plus-India. The same boundary check
+        # already existed in india_facet_values() for the Workday and Oracle location facets,
+        # and the README's "Indiana contains india" note describes that one; it was never wired
+        # into this gate, which is the one every req passes through.
+        #
+        # Masked until now because Workday and Oracle narrow to India server-side, so no Indiana
+        # req ever reached here from them, and the boards with no server-side filter happened not
+        # to have posted an in-band Midwest role yet.
+        #
+        # Applied to every geo list rather than just country_terms, because the trap is not
+        # specific to India: "ncr" is in relocation_terms and is a substring of "Concrete",
+        # which is a real town in Washington. Replaying all 636 stored reqs through both the old
+        # and new matcher produced identical verdicts, so this corrects a latent fault without
+        # moving the filter the tracked applications came through.
+        return next((t for t in _terms(geo, key) if re.search(_term_re(t), loc)), None)
 
     # Precedence is deliberate: no-relocation beats remote, and remote beats relocation,
     # because that is the order the candidate would actually prefer the outcomes.

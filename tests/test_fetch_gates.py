@@ -165,28 +165,45 @@ def test_foreign_location_is_kept_when_the_signal_is_not_required():
     assert fetch.geo_verdict("Austin, TX", GEO_OPEN) == ("unclear", "kept, location unclear")
 
 
-# --- Indiana. An open decision for the owner, not a defect fixed here.
+# --- Indiana, and whole-word geo matching generally.
 #
-# geo_verdict's inner hit() is a plain substring test, so "Indiana" DOES match "india" today.
-# The boundary-checked regex (?<![a-z])india(?![a-z]) lives only in india_facet_values, where
-# it narrows a board's location facet; it was never wired into this gate. The README sentence
-# about boundary-checking sits in "Reading the big boards" and is true of that, not of here.
+# geo_verdict's hit() used a plain substring test, so "india" matched inside "Indianapolis" and
+# "Indiana" and a US Midwest req read as an India one. "Remote - Indiana" was the worst case: it
+# matched a remote term AND a country term, so it arrived looking like a remote-India role, the
+# most attractive bucket there is.
 #
-# Direction of the error matters: this is a false positive and never a false negative. It can
-# let a US Indiana req into the digest; it can never drop an India req. These three tests
-# assert what the code actually does, so the behaviour cannot drift unnoticed.
+# The same boundary check already existed in india_facet_values() for the Workday and Oracle
+# location facets, which is what the README's "Indiana contains india" note describes. It was
+# never wired into this gate, the one every req passes through. Masked because Workday and
+# Oracle narrow to India server-side, and the boards without a server-side filter had not yet
+# posted an in-band Midwest role.
+#
+# Fixed by routing every geo list through _term_re, the same whole-word helper the title gate
+# uses. Replaying all 636 stored reqs through the old and new matcher gave identical verdicts,
+# so the tracked applications were not re-filtered.
 
-def test_indiana_currently_matches_india_as_a_substring():
-    assert fetch.geo_verdict("Indiana", GEO) == ("india", "india")
-    assert fetch.geo_verdict("Indianapolis, IN", GEO) == ("india", "india")
-    # The worst of the three: it reaches the scorer looking like a remote-India role.
-    assert fetch.geo_verdict("Remote - Indiana", GEO) == ("remote", "remote + india")
-
-
-@pytest.mark.xfail(strict=True, reason="geo_verdict does not boundary-check India. Changing it "
-                                       "moves the geo gate, and the tracked applications in "
-                                       "jobhunt.db were all filtered by current behaviour, so "
-                                       "it is the owner's call. Delete this marker and the "
-                                       "characterisation test above if the gate is tightened.")
-def test_indiana_should_not_match_india():
+def test_indiana_is_not_india():
+    assert fetch.geo_verdict("Indiana", GEO)[0] is None
     assert fetch.geo_verdict("Indianapolis, IN", GEO)[0] is None
+
+
+def test_remote_indiana_is_not_remote_india():
+    """The regression that mattered most: two false hits compounding into the best bucket."""
+    bucket, _ = fetch.geo_verdict("Remote - Indiana", GEO)
+    assert bucket != "remote" or "india" not in fetch.geo_verdict("Remote - Indiana", GEO)[1]
+
+
+def test_real_india_locations_still_match():
+    """The fix must not cost a single genuine India req."""
+    assert fetch.geo_verdict("Hyderabad, India", GEO) == ("home", "hyderabad")
+    assert fetch.geo_verdict("Bengaluru, India", GEO)[0] == "relocate"
+    assert fetch.geo_verdict("IN - Bengaluru, India", GEO)[0] == "relocate"
+    assert fetch.geo_verdict("Remote - India", GEO)[0] == "remote"
+    assert fetch.geo_verdict("India", GEO) == ("india", "india")
+    assert fetch.geo_verdict("Gurgaon/ Pune, India", GEO)[0] == "relocate"
+    assert fetch.geo_verdict("Bengaluru- We Work", GEO)[0] == "relocate"
+
+
+def test_ncr_does_not_fire_inside_another_word():
+    """`ncr` is in relocation_terms; "Concrete" is a real town in Washington."""
+    assert fetch.geo_verdict("Concrete, Washington", GEO)[0] is None
