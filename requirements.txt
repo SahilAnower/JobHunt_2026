@@ -1,3 +1,12 @@
-# jobhunt needs exactly one third-party package. Everything else is the standard library,
-# and scoring runs through the `claude` CLI rather than an SDK, so there is no API key.
+# jobhunt needs two third-party packages. Everything else is the standard library, and scoring
+# runs through the `claude` CLI rather than an SDK, so there is no API key.
 PyYAML>=6.0
+# Some career hosts serve a chain macOS's /etc/ssl/cert.pem cannot complete —
+# careers.netapp.com failed with CERTIFICATE_VERIFY_FAILED while curl against the same URL
+# returned 200. fetch.py prefers certifi's intermediates and falls back to the system store, so
+# the pipeline still runs without this; NetApp just stops being pollable, quietly. Declared so a
+# fresh clone does not inherit that gap without being told.
+certifi>=2024.2.2
+
+# Tests are in requirements-dev.txt, so a machine that only runs the daily job installs neither
+# pytest nor anything else it will not use.

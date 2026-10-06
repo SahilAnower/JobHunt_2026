@@ -19,7 +19,8 @@ Everything is plain Python and one SQLite file. No server, no daemon, no framewo
 | Need | Why | Check |
 |---|---|---|
 | Python 3.10+ | f-strings with `\|` unions and `match`-era syntax | `python3 -V` |
-| PyYAML | the only dependency | `pip3 install -r requirements.txt` |
+| PyYAML | reads every config file | `pip3 install -r requirements.txt` |
+| certifi | some career hosts serve a chain the macOS CA store cannot complete | same |
 | The `claude` CLI, logged in | scoring and drafting shell out to it | `claude -p "say ok"` |
 
 There is **no API key anywhere in this project.** `score.py` and `draft.py` run
