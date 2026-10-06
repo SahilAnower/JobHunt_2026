@@ -150,7 +150,24 @@ def build(conn, profile: dict) -> str:
         r["status"]: r["c"]
         for r in conn.execute("SELECT status, COUNT(*) c FROM jobs GROUP BY status").fetchall()
     }
-    asks_out = counts.get("referral_ask", 0)
+    # `jobs.status` is the LATEST state, not a history, so mark.py advancing a req to `applied`
+    # erases the fact that a referral ask went out for it first. That is how this line read
+    # "0 referral ask(s) out" on a day the outreach table held 40 sent asks. outreach IS the
+    # event log and keeps both rows, so count there.
+    #   kind = 'referral'      mark.py maps referral_ask -> 'referral'; draft.py --kind email
+    #                          writes 'email', which this does not count. Such a req still
+    #                          shows under "In motion", and the sentence does say referral.
+    #   sent_at IS NOT NULL    draft.py leaves sent_at NULL, so without this the count would
+    #                          include drafts still sitting in outbox/ unsent — which section
+    #                          1 above already lists separately under "Do today".
+    #   COUNT(DISTINCT ...)    the sentence counts reqs, not rows.
+    asks_out = conn.execute(
+        "SELECT COUNT(DISTINCT job_key) c FROM outreach "
+        "WHERE kind = 'referral' AND sent_at IS NOT NULL"
+    ).fetchone()["c"]
+    # Left alone deliberately: `applied` has the same latest-status property (a req advancing
+    # to `screen` decrements it), but there it reads as intended — applications awaiting a
+    # reply — so changing it is a judgement call, not a bug fix.
     applied = counts.get("applied", 0)
     interviews = counts.get("screen", 0) + counts.get("interview", 0)
 
