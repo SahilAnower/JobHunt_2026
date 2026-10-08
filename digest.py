@@ -124,10 +124,20 @@ def build(conn, profile: dict) -> str:
         L.append("")
 
     # 5. below the bar
+    # Ordered by recency within each score band, not by score alone. Ordering on score alone
+    # made this list static: every entry it showed for eighteen days had been first seen on
+    # 2026-09-19, because ties never broke and the oldest rows won the LIMIT. Meanwhile 114 reqs
+    # scoring 6 accumulated behind them, invisible — which is what made the digest look empty on
+    # days when nothing cleared the bar.
+    #
+    # This is a presentation change, not a filter change. The threshold still decides what gets
+    # drafted and tailored; lowering that instead would have put 114 reqs through the drafting
+    # and resume stages, which is both expensive and unreadable.
+    low_limit = rt.get("digest_below_bar", 20)
     low = conn.execute(
         "SELECT * FROM jobs WHERE score IS NOT NULL AND score < ? AND still_open = 1 "
-        "AND status = 'scored' ORDER BY score DESC LIMIT 8",
-        (threshold,),
+        "AND status = 'scored' ORDER BY score DESC, first_seen DESC LIMIT ?",
+        (threshold, low_limit),
     ).fetchall()
     low_total = conn.execute(
         "SELECT COUNT(*) c FROM jobs WHERE score IS NOT NULL AND score < ? AND still_open = 1",

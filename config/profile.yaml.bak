@@ -1,0 +1,386 @@
+# jobhunt — candidate profile and filters
+# Everything the pipeline knows about you lives here. Edit freely; nothing else hardcodes
+# your details. Written 2026-09-19 from the resume text and target list Sahil supplied.
+
+candidate:
+  name: Sahil Anower
+  short_name: Sahil            # how outreach drafts sign off
+  email: sahilanower2@gmail.com
+  phone: "+91 6289208895"
+  base_city: Hyderabad
+  country: India
+  links:
+    linkedin: https://www.linkedin.com/in/sahil-anower-031030365
+    github: https://github.com/SahilAnower
+    leetcode: "1000+ problems solved"
+
+# Pasted verbatim-ish into the scoring prompt. Keep it factual and current; this is the
+# single biggest lever on score quality.
+resume_summary: |
+  Backend engineer, ~3 years experience. Currently Software Development Engineer at
+  Amazon, Hyderabad (Nov 2025 - present).
+
+  Amazon (Nov 2025 - present), SDE, Hyderabad:
+  - Drove international expansion of the "Add-to-Delivery" open-deliveries datapath from
+    US into EU5 (DE, FR, IT, ES, UK) and CA. Multi-region, multi-account monitoring across
+    5 AWS regions (us-east-1, eu-west-1, eu-central-1, eu-south-2, us-west-2).
+  - Authored the technical design for the EU5 Important Info bottom-sheet using Strategy +
+    Factory patterns to render ASIN-level legal disclaimers with zero regression risk to a
+    shared upstream component. Secured cross-functional and senior-engineer alignment.
+  - Re-architected the AtD monitoring AWS CDK package (~500 leaf + 40 composite alarms,
+    5 suites, 10 marketplaces) into a 3-layer feature-sliced design, cutting new-marketplace
+    onboarding from 11 synchronized edits to 1 with byte-identical alarm/dashboard parity.
+  - Engineered AWS CDK self-mutating pipelines shipping composite CloudWatch alarms,
+    automated ticketing, and cross-account dashboards across beta and prod.
+  - Built a multi-agent GenAI post-incident writing agent (Collator -> Writer -> Validation),
+    cutting authoring time from multiple days to same-day.
+
+  Emmes (Mar 2024 - Nov 2024), Associate Software Engineer, Bangalore:
+  - Batch file scheduling and parsing with CSVParser for large data workflows.
+  - Redis-based distributed rate limiting to protect APIs under load.
+
+  Crudcook (Jun 2023 - Jan 2024), Associate Software Engineer, Chandigarh:
+  - Migrated a legacy Node.js monolith to Spring Boot / Java microservices, cutting server
+    load and response time ~20%.
+  - Integrated Jira, QuickBooks, Stripe and Plaid into an in-house CRM.
+
+  GeeksforGeeks (Feb 2023 - May 2023), MTS Intern (DSA), Noida.
+
+  Projects: EcomEase (Java, Spring Boot, Spring Cloud Gateway, Eureka, OpenFeign,
+  RabbitMQ event-driven order processing). ChitChatHub (Node.js, Socket.io, WebRTC, Nginx
+  reverse proxy, Redis Pub/Sub, Docker, MongoDB, React).
+
+  Languages: Java, JavaScript, C++. Stack: Spring Boot, Spring Cloud, Node.js, React,
+  AWS (CDK, Lambda, AppSync, DynamoDB, CloudWatch), GraphQL, Kafka/RabbitMQ, Redis,
+  MySQL/PostgreSQL, MongoDB, Docker, Kubernetes, Jenkins.
+
+  Education: B.Tech Electrical Engineering, Aliah University, Kolkata (Aug 2023), 7.50/10.
+
+# ---------------------------------------------------------------- what counts as a match
+
+roles:
+  # Lane A is the core, best-supported-by-the-resume target. Lane B is the stretch lane.
+  lane_a: Backend / distributed systems / platform engineering (Java, Spring Boot, AWS)
+  lane_b: Agentic AI / LLM application engineering
+
+  # Band. Titles carrying more seniority than this are excluded outright below.
+  band: IC, SDE I to SDE II (Software Engineer / Software Engineer II / SDE)
+
+filters:
+  # A title must match one of these to be considered at all.
+  include_titles:
+    - software engineer
+    - software development engineer
+    - software developer
+    - sde
+    - backend
+    - back end
+    - back-end
+    - full stack
+    - fullstack
+    - distributed systems
+    - platform engineer
+    - infrastructure engineer
+    - systems engineer
+    - cloud engineer
+    - developer experience
+    - api engineer
+    - application engineer
+    - java developer
+    - member of technical staff
+    - ai engineer
+    - ml engineer
+    - llm
+    - genai
+    - gen ai
+    - agent
+    - forward deployed
+
+  # The seniority/scope ceiling, plus non-engineering noise. Checked FIRST — a title
+  # matching any of these is dropped however well it matches include_titles.
+  # This is the highest-value filter in the file: the feeds are dominated by senior roles.
+  # Matched whole-word, and a trailing period is optional — "sr" covers "Sr" and "Sr.", and
+  # will not fire inside "SRE".
+  exclude_titles:
+    - senior
+    - sr
+    - staff
+    - principal
+    - lead            # "Lead Engineer" yes; "Leader" needs its own entry, below
+    - leader
+    - mgr             # NetApp slugs manager as "mgr", so "Mgr Software Engineer" cleared a
+                      # list that only had "manager". Same lesson as SMTS/PMTS: every
+                      # abbreviation of a band needs its own entry.
+    - leadership
+    - architect
+    - manager
+    - director
+    - head of
+    - vp
+    - vice president
+    - chief
+    - distinguished
+    - fellow
+    # Salesforce and Adobe write the whole band as an abbreviation, so the spelled-out ceiling
+    # never fires. MTS on its own is in band; these four are Senior, Lead, Principal and
+    # Distinguished Member of Technical Staff, and they are not.
+    - smts
+    - lmts
+    - pmts
+    - dmts
+    - intern
+    - internship
+    - apprentice
+    - trainee
+    - account executive
+    - sales
+    - marketing
+    - recruiter
+    - recruiting
+    - payroll
+    - accountant
+    - counsel
+    - designer
+    - program manager
+    - product manager
+    - project manager
+
+  # Phrases blanked out of the title BEFORE exclude_titles runs, for in-band titles that
+  # happen to contain a seniority word. The ceiling still applies to the rest of the title,
+  # so "Sr Member of Technical Staff" is still dropped.
+  exclude_overrides:
+    - member of technical staff
+
+  # Lane A subset. Anything matching include_titles but not this is tagged Lane B.
+  lane_a_titles:
+    - software engineer
+    - software development engineer
+    - software developer
+    - sde
+    - backend
+    - back end
+    - back-end
+    - distributed systems
+    - platform engineer
+    - infrastructure engineer
+    - systems engineer
+    - cloud engineer
+    - java developer
+
+geo:
+  # India only. Profile rules out anything needing a visa or relocation abroad.
+  country_terms: [india, bharat]
+  # No relocation needed — the best outcome.
+  home_terms: [hyderabad, telangana, secunderabad]
+  # Acceptable, but means relocating. Surfaced with a flag.
+  relocation_terms:
+    - bangalore
+    - bengaluru
+    - pune
+    - gurgaon
+    - gurugram
+    - noida
+    - delhi
+    - ncr
+    - chennai
+    - mumbai
+    - kolkata
+    - ahmedabad
+    - kochi
+    - coimbatore
+    - chandigarh
+    - jaipur
+    - indore
+    - nagpur
+    - vadodara
+    - mysore
+    - mysuru
+    - trivandrum
+    - thiruvananthapuram
+  remote_terms: [remote, work from home, wfh, anywhere]
+
+  # true  = a location with no India signal at all is DROPPED.
+  # false = it is kept and flagged "location unclear".
+  # Keep true for an India-only search: enumerating every foreign city is never complete,
+  # and each gap leaks an out-of-country req into the digest. The cost is that reqs whose
+  # ATS location field holds a work arrangement ("Hybrid", "In-Office") get dropped unless
+  # the platform exposes a real location elsewhere, which fetch.py tries hard to find.
+  require_india_signal: true
+
+comp:
+  currency: INR
+  target_lpa: 45
+  floor_lpa: 38              # below this is a discard
+  min_fixed_lpa: 28
+  # Indian postings almost never publish a band, so this is judged by the scorer from
+  # company and level rather than parsed from text. Unknown comp is never a discard.
+  note: |
+    Current Amazon total is ~45 LPA (19 fixed + bonus/RSU/sign-on), year-1 inflated by a
+    non-repeating sign-on and a 5/15/40/40 vest; steady state is nearer 30-34 LPA. So a
+    recurring 45 LPA is a real raise, and a 40 LPA offer with 30 LPA fixed may beat the
+    current package in cash terms. Flag those rather than discarding.
+  dealbreakers:
+    - service-based or consultancy comp bands
+    - employment bonds or notice-lock clauses
+    - equity-heavy offers with a weak fixed base
+    - commission or variable-only structures
+
+# ---------------------------------------------------------------- context for scoring
+
+situation: |
+  Urgent, clock-driven search. A performance-improvement plan at Amazon is confirmed and
+  the plan is to take severance and exit rather than run the process.
+
+  Consequences for scoring:
+  - Speed is a real scoring dimension. A 7 that can produce a signed offer in six weeks
+    beats a 9 with a four-month loop.
+  - The main risk is narrative, not sourcing: a 10-month Amazon tenure, a performance plan,
+    and a 12-month gap in 2025. Resume screeners kill that combination; humans who vouch
+    for the candidate do not. So weight roles where a referral is plausible.
+  - Reason for leaving, the version to use: growth. Team reorganisation and Amazon's shift
+    of investment toward AI narrowed the growth path in their org. Never volunteer the
+    performance plan; never lie about it if asked directly.
+  - Years of experience: ~3. Treat a JD asking for 5+ years as a stretch needing a referral,
+    and 8+ as effectively closed without one.
+
+# What the drafter must never put in a message. Lives here, not in draft.py, because draft.py is
+# version-controlled and this is the most sensitive thing the pipeline knows.
+drafting:
+  never_mention:
+    - the performance improvement plan
+    - the severance or the planned exit
+    - the 2025 employment gap
+    - the 10-month tenure framed as short
+  reason_for_leaving: >-
+    growth — a team reorganisation and a shift of investment toward AI narrowed the path.
+    Never elaborate beyond this, and never volunteer the performance plan.
+
+exclusions:
+  # Never surface. Current and former employers, plus the IT-services category.
+  companies:
+    - Amazon
+    - AWS
+    - Audible
+    - Twitch
+    - Whole Foods
+    - Ring
+    - Zoox
+    - Emmes
+    - Crudcook
+    - GeeksforGeeks
+    - TCS
+    - Infosys
+    - Wipro
+    - Accenture
+    - Cognizant
+    - Capgemini
+    - LTIMindtree
+    - Tech Mahindra
+    - HCLTech
+    - Mphasis
+    - Persistent Systems
+    - Hexaware
+    - Coforge
+    - Mindtree
+    - Virtusa
+    - Zensar
+    - Birlasoft
+    - UST
+    - Genpact
+    # Added 2026-10-04 with the Instahyre aggregator. `industries` below already rules out
+    # staffing and agency placement, but that list is prose for the scorer — only this one is a
+    # hard gate, and an aggregator surfaces these by the hundred. Accenture alone posts 405.
+    - Wissen Technology
+    - Klimb.io
+    - Randstad
+    - Michael Page
+    - ABC Consultants
+    - CIEL HR
+    - Antal International
+    - Careernet
+    - Xpheno
+    - TeamLease
+    - Quess
+    - Adecco
+    - ManpowerGroup
+    - Hays
+    - Robert Half
+    - Collabera
+    - Synechron
+    - Iris Software
+    - Nagarro
+    - GlobalLogic
+    - EPAM
+    - Luxoft
+    - Thoughtworks
+    - Publicis Sapient
+  industries:
+    - IT services and consultancies
+    - staffing, contract-to-hire, third-party payroll, agency placement
+    - unfunded or pre-seed startups with no disclosed funding
+    - gambling and betting
+    - client-project delivery rather than owning a product
+
+targets:
+  # All treated as priority. Re-probed by discover.py; see config/boards.yaml for which
+  # of these actually expose a JSON API.
+  companies:
+    - Google
+    - Meta
+    - Microsoft
+    - LinkedIn
+    - Uber
+    - Flipkart
+    - PhonePe
+    - Rubrik
+    - Atlassian
+    - Apple
+    - Salesforce
+    - Adobe
+    - NVIDIA
+    - Oracle
+    - Razorpay
+    - Rippling
+    - Expedia Group
+    - Wells Fargo
+    - JP Morgan Chase
+    - Mastercard
+    - Visa
+    - Autodesk
+    - Juspay
+    - Cisco
+    - Intuit
+    - Databricks
+    - Cloudflare
+    - Datadog
+    - Confluent
+    - Experian
+    - ServiceNow
+
+  # Comp at SDE I-II in India can land at or under the floor at these. Still scan, but
+  # verify the band before spending outreach.
+  comp_risk:
+    - Wells Fargo
+    - JP Morgan Chase
+    - Mastercard
+    - Visa
+    - Experian
+
+runtime:
+  timezone: Asia/Kolkata
+  # Scoring shells out to the `claude` CLI on your subscription — no API key needed.
+  claude_bin: claude
+  score_threshold: 7          # digest promotes reqs at or above this
+  digest_below_bar: 20        # how many near-misses the collapsed "Below the bar" block lists.
+                              # Raise this rather than dropping score_threshold when the digest
+                              # feels thin: the threshold also gates drafting and resume
+                              # tailoring, so lowering it to 6 would put every 6/10 through both
+                              # stages. This only changes what you can see.
+  max_score_batch: 12         # reqs per `claude -p` call
+  max_parallel_claude: 4      # concurrent `claude -p` calls in score.py and draft.py.
+                              # Each call is a subprocess waiting on a network round trip, so
+                              # these overlap well. Raise it if the machine has headroom;
+                              # lower it to 1 to get the old strictly-serial behaviour back.
+  user_agent: >-
+    Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+    (KHTML, like Gecko) Chrome/124.0 Safari/537.36

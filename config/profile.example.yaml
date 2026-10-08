@@ -60,6 +60,10 @@ filters:
     - api engineer
     - java developer
     - member of technical staff
+    # Allowed deliberately: SMTS (Senior Member of Technical Staff) sits close enough to
+    # SDE II/III at some employers to be worth reading. Listed here as well as removed from
+    # exclude_titles so a bare "SMTS, Data Cloud" title still matches the include list.
+    - smts
     - ai engineer
     - ml engineer
     - llm
@@ -94,9 +98,8 @@ filters:
     - distinguished
     - fellow
     # Some employers write the whole band as an abbreviation, so the spelled-out ceiling never
-    # fires. MTS on its own is in band; these four are Senior/Lead/Principal/Distinguished
-    # Member of Technical Staff and are not.
-    - smts
+    # fires. MTS and SMTS are both treated as in band (see include_titles); these three are
+    # Lead/Principal/Distinguished Member of Technical Staff and are not.
     - lmts
     - pmts
     - dmts
@@ -120,8 +123,12 @@ filters:
 
   # Phrases blanked out of the title BEFORE exclude_titles runs, for in-band titles that
   # happen to contain a seniority word. The ceiling still applies to the rest of the title,
-  # so "Sr Member of Technical Staff" is still dropped.
+  # so "Lead Member of Technical Staff" is still dropped on "lead".
+  # Longest first — these are applied in order, and blanking the short form first would leave
+  # "senior"/"sr" behind and drop a title we mean to keep.
   exclude_overrides:
+    - senior member of technical staff
+    - sr member of technical staff
     - member of technical staff
 
   # Anything matching include_titles but not this is tagged Lane B in the digest.
@@ -263,6 +270,10 @@ runtime:
   timezone: Asia/Kolkata
   claude_bin: claude         # the Claude Code CLI; scoring and drafting shell out to it
   score_threshold: 7         # the referral bar. 7+ gets a draft written
+  digest_below_bar: 20       # how many near-misses the collapsed "Below the bar" block lists.
+                             # Raise this first when the digest feels thin. score_threshold also
+                             # gates drafting and resume tailoring, so lowering that sends every
+                             # near-miss through both stages; this only changes what you see.
   max_parallel_claude: 4     # concurrent `claude -p` calls in score.py and draft.py. Each is a
                              # subprocess waiting on a network round trip, so they overlap well.
                              # Set to 1 for the old strictly-serial behaviour.
