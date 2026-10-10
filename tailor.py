@@ -30,7 +30,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import claudecall
+import engine
 import jobprofile
 import store
 
@@ -122,6 +122,24 @@ def build_prompt(master: str, profile: dict, job) -> str:
 
 SECTIONS = ("TAILORED RESUME", "WHAT CHANGED", "KEYWORDS ADDED", "GAPS")
 
+FENCE = re.compile(r"^\s*```[\w-]*\s*$", re.M)
+
+
+def _unfence(s: str) -> str:
+    """
+    Drop markdown fence lines from a section body.
+
+    GAPS is matched to end of input, so a reply wrapped in one code fence put its closing fence
+    inside GAPS. Stripping fence-only lines from every section fixes that and the mirror case,
+    an opening ```markdown at the head of TAILORED RESUME, which would otherwise be the first
+    line of the artefact that gets exported.
+
+    Only lines that are nothing but a fence are removed, and from anywhere in the section
+    rather than just the ends, because a reply that fences each section individually produces
+    them in the middle. A bullet that mentions a fenced snippet inline survives.
+    """
+    return FENCE.sub("", s).strip()
+
 
 def split_sections(raw: str) -> dict:
     """Pull the four labelled blocks out, tolerating a stray preamble or markdown fencing."""
@@ -130,7 +148,7 @@ def split_sections(raw: str) -> dict:
         nxt = order[i + 1] if i + 1 < len(order) else None
         pat = rf"{name}:\s*(.*?)(?=\n\s*{nxt}:|\Z)" if nxt else rf"{name}:\s*(.*)\Z"
         m = re.search(pat, raw, re.S)
-        out[name] = (m.group(1).strip() if m else "")
+        out[name] = _unfence(m.group(1)) if m else ""
     return out
 
 
@@ -184,6 +202,8 @@ def main() -> int:
     ap.add_argument("--retailor", action="store_true", help="overwrite an existing file")
     ap.add_argument("--include-instahyre", action="store_true",
                     help="tailor aggregator reqs too, which mostly have no JD text")
+    ap.add_argument("--engine", choices=engine.VALID,
+                    help="override runtime.engine for this run")
     args = ap.parse_args()
 
     if not RESUME.exists():
@@ -194,7 +214,12 @@ def main() -> int:
     profile = jobprofile.load()
     rt = jobprofile.runtime(profile)
     threshold = args.min_score or rt.get("score_threshold", 7)
-    claude_bin = rt.get("claude_bin", "claude")
+    try:
+        engine_name = engine.resolve(rt, args.engine)
+        eng = engine.get(engine_name)
+    except engine.BadEngine as e:
+        print(e)
+        return 1
 
     with store.connect() as conn:
         if args.key:
@@ -240,28 +265,26 @@ def main() -> int:
             print("\n(dry run — nothing written)")
             return 0
 
-        workers = rt.get("max_parallel_claude", claudecall.DEFAULT_WORKERS)
+        workers = rt.get("max_parallel_claude", 4)
         try:
-            replies = claudecall.run(
-                [build_prompt(master, profile, r) for r in todo],
-                claude_bin, CALL_TIMEOUT, workers,
+            replies = eng.tailor_resumes(
+                master, profile, todo,
                 announce=f"\ncalling claude for {len(todo)} resume(s), "
                          f"{workers} at a time",
             )
-        except claudecall.Unusable as e:
-            print(f"claude is not usable: {e}")
+        except engine.EngineUnusable as e:
+            print(f"aborted: {e}" if e.mid_stage else f"{engine_name} is not usable: {e}")
             return 1
-        except claudecall.AuthExpired as e:
-            print(f"aborted: {e}")
+        except engine.ConfigError as e:
+            print(e)
             return 1
 
         written = 0
-        for r, (raw, err) in zip(todo, replies):
+        for r, parts in zip(todo, replies):
             print(f"\n{r['company']} — {r['title'][:44]}")
-            if err is not None:
-                print(f"  failed: {err}")
+            if isinstance(parts, Exception):
+                print(f"  failed: {parts}")
                 continue
-            parts = split_sections(raw)
             if not parts["TAILORED RESUME"]:
                 print("  failed: reply had no TAILORED RESUME section")
                 continue

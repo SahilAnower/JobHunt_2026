@@ -7,13 +7,22 @@ before copying it into LinkedIn or an email yourself. That is deliberate and not
 to be engineered away: automated LinkedIn messaging gets accounts restricted, and a referral
 ask that reads as generated costs you the contact, not just the referral.
 
-Drafts are produced by `claude -p` from the profile, so they carry the actual resume facts
-instead of adjectives. One file per job, named outbox/<date>-<company>-<slug>.md.
+Drafts carry the actual resume facts instead of adjectives, and which engine produces them is
+a profile setting. `heuristic` fills a tracked template bank from the scorer's own matched
+skills, so the message and the score_reason in the same file cannot contradict each other.
+`claude` generates them through `claude -p`. One file per job, named
+outbox/<date>-<company>-<slug>-<req>.md either way.
+
+A templated ask is less personal than a generated one. The `## Risks` section and the
+**read it aloud** checklist item were always the mitigation and now carry more weight: the
+variant bank stops two asks in one week reading identically, it does not make a template read
+like a message typed for one specific person.
 
     python3 draft.py --dry-run            # show which jobs would get a draft
     python3 draft.py                      # draft everything at or above the threshold
     python3 draft.py --key cloudflare::123
     python3 draft.py --min-score 8
+    python3 draft.py --engine claude
 """
 
 from __future__ import annotations
@@ -25,7 +34,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import claudecall
+import engine
 import jobprofile
 import store
 
@@ -176,12 +185,19 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=6,
                     help="how many drafts to write (default: %(default)s)")
     ap.add_argument("--redraft", action="store_true", help="draft again even if one exists")
+    ap.add_argument("--engine", choices=engine.VALID,
+                    help="override runtime.engine for this run")
     args = ap.parse_args()
 
     profile = jobprofile.load()
     rt = jobprofile.runtime(profile)
     threshold = args.min_score or rt.get("score_threshold", 7)
-    claude_bin = rt.get("claude_bin", "claude")
+    try:
+        engine_name = engine.resolve(rt, args.engine)
+        eng = engine.get(engine_name)
+    except engine.BadEngine as e:
+        print(e)
+        return 1
 
     with store.connect() as conn:
         if args.key:
@@ -211,37 +227,36 @@ def main() -> int:
             print("\n(dry run — nothing written)")
             return 0
 
-        # claudecall.run makes one cheap call before spending real ones. That matters here:
+        # The claude engine makes one cheap call before spending real ones. That matters here:
         # an expired Midway session previously cost a CALL_TIMEOUT per draft before anything
         # said why — five failures and 1086s for one written draft. Drafts are independent so
         # they run concurrently; files and outreach rows are created below on this thread,
         # because sqlite3 connections are not thread-safe and serial writes also keep the
         # printed order stable.
-        workers = rt.get("max_parallel_claude", claudecall.DEFAULT_WORKERS)
+        workers = rt.get("max_parallel_claude", 4)
         try:
-            replies = claudecall.run(
-                [build_prompt(profile, r, args.kind) for r in todo],
-                claude_bin, CALL_TIMEOUT, workers,
+            replies = eng.draft_referrals(
+                profile, todo, args.kind,
                 announce=f"\ncalling claude for {len(todo)} draft(s), "
                          f"{workers} at a time",
             )
-        except claudecall.Unusable as e:
-            print(f"claude is not usable: {e}")
+        except engine.EngineUnusable as e:
+            print(f"aborted: {e}" if e.mid_stage else f"{engine_name} is not usable: {e}")
             return 1
-        except claudecall.AuthExpired as e:
-            print(f"aborted: {e}")
+        except engine.ConfigError as e:
+            print(e)
             return 1
 
         written = 0
-        for r, (raw, err) in zip(todo, replies):
+        for r, result in zip(todo, replies):
             print(f"\n{r['company']} — {r['title'][:44]}")
-            if err is not None:
-                if isinstance(err, subprocess.TimeoutExpired):
+            if isinstance(result, Exception):
+                if isinstance(result, subprocess.TimeoutExpired):
                     print(f"  failed: timed out after {CALL_TIMEOUT}s")
                 else:
-                    print(f"  failed: {err}")
+                    print(f"  failed: {result}")
                 continue
-            message, risks = split_sections(raw.strip())
+            message, risks = result
             path = write_draft(r, message, risks, args.kind)
             store.add_outreach(
                 conn, job_key=r["key"], company=r["company"], kind=args.kind,

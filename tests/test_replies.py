@@ -157,13 +157,37 @@ def test_tailor_garbage_input_yields_all_empty():
     assert got["TAILORED RESUME"] == ""
 
 
-def test_tailor_closing_fence_lands_in_the_last_section():
-    # CHARACTERISATION. The final section's pattern runs to \Z, so a wrapping code fence ends
-    # up inside GAPS. Cosmetic — GAPS is prose a human reads — and not worth a regex change
-    # that would touch the resume text itself.
+def test_tailor_closing_fence_is_stripped_from_the_last_section():
+    # REWRITTEN, and the only pre-existing test this branch changes. It used to be a
+    # CHARACTERISATION test asserting the bug: GAPS is matched to \Z, so a wrapping code fence
+    # ended up inside it. The no-claude branch had to fix that, because the mirror case puts an
+    # opening ```markdown at the head of TAILORED RESUME, which is the artefact that gets
+    # exported — a fence in there is not cosmetic. tailor._unfence now drops fence-only lines
+    # from every section, so this asserts the behaviour that replaced the bug.
     got = tailor.split_sections("```\n" + FULL + "\n```")
     assert got["TAILORED RESUME"] == "Name, 3 years"
-    assert got["GAPS"] == "- no Go\n```"
+    assert got["GAPS"] == "- no Go"
+
+
+def test_tailor_opening_fence_is_stripped_from_the_first_section():
+    got = tailor.split_sections("TAILORED RESUME:\n```markdown\nName, 3 years\n```")
+    assert got["TAILORED RESUME"] == "Name, 3 years"
+
+
+def test_tailor_unfenced_reply_is_unchanged():
+    assert tailor.split_sections(FULL) == {
+        "TAILORED RESUME": "Name, 3 years",
+        "WHAT CHANGED": "- led with the CDK bullet",
+        "KEYWORDS ADDED": "- observability",
+        "GAPS": "- no Go",
+    }
+
+
+def test_tailor_inline_fenced_snippet_inside_a_bullet_survives():
+    # Only lines that are nothing but a fence are removed, so a bullet that legitimately
+    # mentions one inline keeps it.
+    got = tailor.split_sections("GAPS:\n- the JD wants ```terraform``` modules")
+    assert got["GAPS"] == "- the JD wants ```terraform``` modules"
 
 
 def test_tailor_sections_out_of_order_overlap():

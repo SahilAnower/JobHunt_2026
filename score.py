@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 """
-Score unscored jobs 1-10 by shelling out to the `claude` CLI.
+Score unscored jobs 1-10, through whichever engine the profile selects.
 
-Uses your Claude subscription through `claude -p`, so there is no API key anywhere in this
-project. Jobs go out in batches (runtime.max_score_batch) because one call judging twelve
-reqs against the same profile is both cheaper and more consistent than twelve calls that
-cannot see each other.
+Two engines. `heuristic` (the default) scores with a deterministic, weighted rule set in this
+repo: no subprocess, no network, no account. `claude` shells out to `claude -p` on your
+subscription, so there is no API key anywhere in this project, and sends jobs in batches
+(runtime.max_score_batch) because one call judging twelve reqs against the same profile is both
+cheaper and more consistent than twelve calls that cannot see each other.
 
-The prompt is built from config/profile.yaml only — resume, band, geography, comp reality,
-and the situation block. Editing the profile changes the scoring; this file holds no opinions
-about the candidate at all.
+    runtime:
+      engine: heuristic          # or claude. Absent means heuristic.
 
-    python3 score.py --dry-run     # print the prompt for the first batch, call nothing
+The prompt and the rule set are both built from config/profile.yaml only — resume, band,
+geography, comp reality, and the situation block — plus config/resume.md for the never-claim
+list. Editing the profile changes the scoring; this file holds no opinions about the candidate
+at all.
+
+    python3 score.py --dry-run     # print what the engine would do, call nothing
     python3 score.py               # score everything unscored
     python3 score.py --limit 5
     python3 score.py --rescore     # re-score jobs that already have a score
+    python3 score.py --engine claude
 """
 
 from __future__ import annotations
@@ -27,11 +33,13 @@ import sys
 import textwrap
 from pathlib import Path
 
-import claudecall
+import engine
 import jobprofile
 import store
 
 ROOT = Path(__file__).resolve().parent
+RESUME = ROOT / "config" / "resume.md"
+RESUME_EXAMPLE = ROOT / "config" / "resume.example.md"
 JD_CHARS = 2500          # per req, inside the prompt
 # Was 420s, chosen when batches ran one at a time. Batches now run concurrently, so a stuck
 # call no longer blocks the others and there is no reason to wait this long for one of them.
@@ -157,20 +165,49 @@ def parse_scores(raw: str, n: int) -> list[dict]:
     return out
 
 
+def load_master() -> str | None:
+    """
+    The master resume, for the never-claim list the heuristic scorer treats as a hard negative.
+
+    Resolved here rather than inside the engine for three reasons: it keeps `score_one` pure and
+    free of I/O, it lets a test point the scorer at a fixture resume without monkeypatching a
+    module constant, and the resume.example.md rung is load-bearing in a worktree that has no
+    gitignored resume.md — without it a calibration run would score with the never-claim
+    dimension silently off and the resulting numbers would not describe the shipped scorer.
+    """
+    path = RESUME if RESUME.exists() else (RESUME_EXAMPLE if RESUME_EXAMPLE.exists() else None)
+    if path is None:
+        print("no master resume; never-claim penalties are off for this run")
+        return None
+    if path is RESUME_EXAMPLE:
+        print("no config/resume.md; using config/resume.example.md for the never-claim list")
+    return path.read_text(encoding="utf-8")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true", help="print the first prompt only")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print what the engine would do, call nothing")
     ap.add_argument("--limit", type=int, default=100,
                     help="how many reqs to score (default: %(default)s)")
     ap.add_argument("--rescore", action="store_true")
     ap.add_argument("--batch", type=int,
-                    help="reqs per scoring call; defaults to runtime.max_score_batch (12)")
+                    help="reqs per scoring call; defaults to runtime.max_score_batch (12). "
+                         "Ignored by the heuristic engine, which groups by 50.")
+    ap.add_argument("--engine", choices=engine.VALID,
+                    help="override runtime.engine for this run")
     args = ap.parse_args()
 
     profile = jobprofile.load()
     rt = jobprofile.runtime(profile)
-    claude_bin = rt.get("claude_bin", "claude")
     batch_size = args.batch or rt.get("max_score_batch", 12)
+    try:
+        engine_name = engine.resolve(rt, args.engine)
+        eng = engine.get(engine_name)
+    except engine.BadEngine as e:
+        print(e)
+        return 1
+    master = load_master()
 
     with store.connect() as conn:
         if args.rescore:
@@ -185,59 +222,67 @@ def main() -> int:
             print("nothing to score")
             return 0
 
-        batches = [rows[i:i + batch_size] for i in range(0, len(rows), batch_size)]
-        print(f"{len(rows)} job(s) to score in {len(batches)} batch(es) of up to {batch_size}")
+        # The engine owns the grouping, because the claude engine batches and the heuristic one
+        # does not. `plan` hands the units back so this stage keeps owning both strings that
+        # depend on them: the header below and the --dry-run preview.
+        batches = eng.plan(rows, batch_size=batch_size)
+        print(f"{len(rows)} job(s) to score in {len(batches)} batch(es) of up to "
+              f"{batch_size if engine_name != 'heuristic' else len(batches[0])}")
 
         if args.dry_run:
             print("\n" + "=" * 78)
-            print(build_prompt(profile, batches[0]))
+            print(eng.dry_run_preview(profile, batches[0], master=master))
             print("=" * 78)
-            print("\n(dry run — claude not called)")
+            print(f"\n(dry run — {engine_name} not called)")
             return 0
 
-        # claudecall.run makes one cheap call first, then runs the batches together. The cheap
-        # call matters: an expired Midway session used to cost a full CALL_TIMEOUT per batch
-        # before anyone found out, which is most of how a score stage reached 420s having
-        # scored nothing. Batches are independent so they parallelise; the DB writes stay
-        # below, on this thread, because a sqlite3 connection is not thread-safe.
-        workers = rt.get("max_parallel_claude", claudecall.DEFAULT_WORKERS)
-        try:
-            replies = claudecall.run(
-                [build_prompt(profile, b) for b in batches],
-                claude_bin, CALL_TIMEOUT, workers,
-                announce=f"calling claude for {len(batches)} batch(es), "
-                         f"{workers} at a time",
-            )
-        except claudecall.Unusable as e:
-            print(f"claude is not usable: {e}")
-            return 1
-        except claudecall.AuthExpired as e:
-            print(f"aborted: {e}")
-            return 1
-
         total = 0
-        for bi, (batch, (raw, err)) in enumerate(zip(batches, replies), 1):
-            print(f"\nbatch {bi}/{len(batches)} ({len(batch)} reqs) ...")
-            if err is not None:
-                if isinstance(err, subprocess.TimeoutExpired):
-                    print(f"  timed out after {CALL_TIMEOUT}s; leaving this batch unscored")
-                else:
-                    print(f"  failed: {err}")
-                continue
-            try:
-                results = parse_scores(raw, len(batch))
-            except Exception as e:  # noqa: BLE001
-                print(f"  unparseable reply: {e}")
-                continue
+        threshold = rt.get("score_threshold", 7)
 
-            for r in results:
-                j = batch[r["n"] - 1]
+        def on_batch(bi, nbatches, nreqs, results, error):
+            # This callback owns every print and every DB write. The stage deliberately does
+            # not also iterate score_reqs' return value: doing both writes every row twice and
+            # doubles the count `scored N job(s)` reports.
+            nonlocal total
+            print(f"\nbatch {bi}/{nbatches} ({nreqs} reqs) ...")
+            if error is not None and not results:
+                if isinstance(error, subprocess.TimeoutExpired):
+                    print(f"  timed out after {CALL_TIMEOUT}s; leaving this batch unscored")
+                elif isinstance(error, engine.UnparseableReply):
+                    print(f"  unparseable reply: {error}")
+                else:
+                    print(f"  failed: {error}")
+                return
+            if error is not None:
+                print(f"  partial failure: {error}")
+            for r in results or []:
+                j = rows[r["n"] - 1]
                 store.set_score(conn, j["key"], r["score"], r["reason"],
                                 lane=r["lane"], speed_note=r["speed"])
                 total += 1
-                flag = "*" if r["score"] >= rt.get("score_threshold", 7) else " "
+                flag = "*" if r["score"] >= threshold else " "
                 print(f" {flag}{r['score']:>2}  {j['company']:<14} {j['title'][:40]:<40} "
                       f"{textwrap.shorten(r['reason'], 70)}")
+
+        # The claude engine makes one cheap call first, then runs the batches together. The
+        # cheap call matters: an expired Midway session used to cost a full CALL_TIMEOUT per
+        # batch before anyone found out, which is most of how a score stage reached 420s having
+        # scored nothing. Batches are independent so they parallelise; the DB writes stay in
+        # the callback, on this thread, because a sqlite3 connection is not thread-safe.
+        workers = rt.get("max_parallel_claude", 4)
+        try:
+            eng.score_reqs(
+                profile, rows, master=master, batch_size=batch_size,
+                announce=f"calling claude for {len(batches)} batch(es), "
+                         f"{workers} at a time",
+                on_batch=on_batch,
+            )
+        except engine.EngineUnusable as e:
+            print(f"aborted: {e}" if e.mid_stage else f"{engine_name} is not usable: {e}")
+            return 1
+        except engine.ConfigError as e:
+            print(e)
+            return 1
 
         store.log_run(conn, "score", scored=total)
 

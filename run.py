@@ -23,8 +23,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import engine
+import jobprofile
+
 ROOT = Path(__file__).resolve().parent
 PY = sys.executable or "python3"
+
+# The stages that need judgement, and so an engine. fetch and digest are pure mechanics.
+JUDGEMENT = ("score", "draft", "tailor")
 
 STAGES = [
     ("fetch",  [PY, "fetch.py", "--seed", "--enrich"], "poll the ATS boards, reload the seed list, recover JD text"),
@@ -52,6 +58,8 @@ def main() -> int:
     ap.add_argument("--no-draft", action="store_true")
     ap.add_argument("--no-tailor", action="store_true")
     ap.add_argument("--only", action="append", choices=[s[0] for s in STAGES])
+    ap.add_argument("--engine", choices=engine.VALID,
+                    help="override runtime.engine for every stage in this run")
     args = ap.parse_args()
 
     stages = [s for s in STAGES
@@ -60,7 +68,19 @@ def main() -> int:
     if args.only:
         stages = [s for s in stages if s[0] in args.only]
 
-    print(f"jobhunt run — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+    try:
+        engine_name = engine.resolve(jobprofile.runtime(jobprofile.load()), args.engine)
+    except engine.BadEngine as e:
+        print(e)
+        return 1
+    # The three judgement stages take --engine themselves, so an override here has to travel
+    # with them rather than being resolved once and forgotten.
+    if args.engine:
+        stages = [(n, c + (["--engine", args.engine] if n in JUDGEMENT else []), w)
+                  for n, c, w in stages]
+
+    print(f"jobhunt run — {datetime.now().strftime('%Y-%m-%d %H:%M')}  "
+          f"engine: {engine_name}\n")
     if args.dry_run:
         for name, cmd, why in stages:
             print(f"  {name:<8} {' '.join(cmd[1:]):<34} {why}")
@@ -70,15 +90,18 @@ def main() -> int:
     # does not make `claude` error cleanly: some calls exit 1, others hang until their timeout,
     # so score and draft used to burn ~25 minutes discovering it one call at a time. fetch
     # needs no credentials, so still run it — a digest built on a stale score beats no digest.
-    if any(s[0] in ("score", "draft", "tailor") for s in stages):
-        import claudecall
-        ok, msg = claudecall.preflight()
+    #
+    # The heuristic engine has no credential to check, so its preflight returns ok without
+    # touching anything. Keeping the call rather than branching on the name is what makes this
+    # block say "ask the engine" instead of "assume claude".
+    if engine_name != "heuristic" and any(s[0] in JUDGEMENT for s in stages):
+        ok, msg = engine.get(engine_name).preflight(jobprofile.load())
         if not ok:
-            print(f"claude is not usable: {msg}\n")
-            stages = [s for s in stages if s[0] not in ("score", "draft", "tailor")]
+            print(f"{engine_name} is not usable: {msg}\n")
+            stages = [s for s in stages if s[0] not in JUDGEMENT]
             print("Skipping score and draft. Running "
                   f"{', '.join(s[0] for s in stages) or 'nothing'} instead; re-run once "
-                  "`claude` works to score and draft what today's fetch brought in.\n")
+                  f"`{engine_name}` works to score and draft what today's fetch brought in.\n")
 
     failed = []
     for name, cmd, _ in stages:
