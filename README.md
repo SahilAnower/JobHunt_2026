@@ -21,12 +21,16 @@ Everything is plain Python and one SQLite file. No server, no daemon, no framewo
 | Python 3.10+ | f-strings with `\|` unions and `match`-era syntax | `python3 -V` |
 | PyYAML | reads every config file | `pip3 install -r requirements.txt` |
 | certifi | some career hosts serve a chain the macOS CA store cannot complete | same |
-| The `claude` CLI, logged in | scoring and drafting shell out to it | `claude -p "say ok"` |
+| The `claude` CLI, logged in | **optional** — only for `engine: claude` | `claude -p "say ok"` |
 
-There is **no API key anywhere in this project.** `score.py` and `draft.py` run
-`claude -p --output-format text` against your existing Claude subscription, so a run costs
-nothing per req. If `claude` is not on your `PATH`, put its absolute path in
-`runtime.claude_bin` in your profile.
+There is **no API key anywhere in this project**, and on the default `engine: heuristic` there
+is no LLM either: scoring, drafting and tailoring are plain Python, so the pipeline runs
+offline, free, and with nothing to log into. See [Choosing an engine](#choosing-an-engine).
+
+`engine: claude` is the other option. It runs `claude -p --output-format text` against an
+existing Claude subscription, so it costs nothing per req but does need the CLI on your `PATH`
+and a live session. If `claude` is installed elsewhere, put its absolute path in
+`runtime.claude_bin`.
 
 Internet access to the ATS APIs is the only other requirement. Nothing needs authentication —
 every board this polls is a public unauthenticated JSON endpoint.
@@ -63,6 +67,25 @@ you. Every key is commented in the example. The four that matter most:
 
 `comp.floor_lpa` and `comp.target_lpa` are in lakhs per annum. Change `comp.currency` and the
 numbers if you are searching outside India, and replace the `geo` lists to match.
+
+#### When you leave your current job
+
+The outreach drafts name your employer and write about it in the present tense. That comes from
+three keys under `candidate:`, not from the templates:
+
+```yaml
+candidate:
+  employer: Example Corp
+  employer_is_current: true
+  tenure_phrase: just over two years in   # optional
+```
+
+**Set `employer_is_current: false` the day you leave.** Every draft switches from "I work on X
+at Example Corp" to "I worked on X at Example Corp". Leave it `true` after the fact and the
+drafts claim a job you no longer hold, to the people best placed to know it.
+
+Clearing `employer` entirely is also fine: `$employer_clause` carries its own " at ", so the
+sentence closes up cleanly rather than trailing a preposition. `tenure_phrase` may be blank.
 
 ### 2b. Fill in `config/seed.yaml`
 
@@ -188,8 +211,9 @@ it.
 
 ### Per-stage limits
 
-Each stage caps how much it does in one pass, so a single run cannot drain a board or spend an
-afternoon in `claude`. These are flags rather than profile keys on purpose: they are
+Each stage caps how much it does in one pass, so a single run cannot drain a board, or spend an
+afternoon in `claude` on the engine that shells out. These are flags rather than profile keys
+on purpose: they are
 per-invocation decisions, not settings. `python3 <stage>.py --help` always prints the live
 value, so this table cannot drift out of date without the help text drifting too.
 
@@ -199,16 +223,18 @@ value, so this table cannot drift out of date without the help text drifting too
 | `fetch.py --recheck-closed` | `--recheck-limit` | 60 | closed reqs re-probed |
 | `fetch.py --recheck-closed` | `--recheck-min-score` | 6 | score floor for re-probing (unscored always included) |
 | `score.py` | `--limit` | 100 | reqs scored |
-| `score.py` | `--batch` | `runtime.max_score_batch` (12) | reqs per `claude` call |
+| `score.py` | `--batch` | `runtime.max_score_batch` (12) | reqs per scoring call (`claude` engine only) |
 | `draft.py` | `--limit` | 6 | drafts written |
 | `tailor.py` | `--limit` | 6 | resumes tailored |
 
-`draft.py` and `tailor.py` sit at 6 because each one is a separate `claude` call and you have
-to read every result by hand. `score.py` sits at 100 because twelve reqs share a call.
+`draft.py` and `tailor.py` sit at 6 because you have to read every result by hand, which is
+true of both engines. `score.py` sits at 100 because twelve reqs share one call.
 
 Two related knobs *are* profile keys, under `runtime:`, because they tune every run and depend
 on the machine rather than on the day: `max_score_batch` (reqs per scoring call) and
-`max_parallel_claude` (how many `claude` calls run at once).
+`max_parallel_claude` (how many `claude` calls run at once). Both apply to `engine: claude`
+only — the heuristic engine makes no subprocess calls, so batching and parallelism do not
+apply and raising `--limit` costs nothing but time.
 
 ### Running the tests
 
@@ -288,7 +314,8 @@ that, use launchd below.
   </dict>
   <key>EnvironmentVariables</key>
   <dict>
-    <!-- `claude` lives outside launchd's minimal PATH. -->
+    <!-- Needed only for `engine: claude`, which lives outside launchd's minimal PATH.
+         The heuristic engine needs nothing beyond python3. -->
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
@@ -302,8 +329,10 @@ launchctl start com.jobhunt.daily        # run it now, to prove it works
 tail -40 logs/run.log
 ```
 
-Whichever you choose, verify once by hand before trusting it. The two failure modes are both
-environmental and both silent: `claude` not on the scheduler's `PATH`, and `logs/` not existing.
+Whichever you choose, verify once by hand before trusting it. The failure modes are
+environmental and silent: `logs/` not existing, and — on `engine: claude` only — `claude` not
+being on the scheduler's `PATH`. On `engine: heuristic` the second one cannot happen, which is
+one fewer thing to debug at 8am.
 `run.py` prints a per-stage `ok` / `FAILED` line, so `grep FAILED logs/run.log` is the one-line
 health check.
 
@@ -323,11 +352,20 @@ overnight in IST, so a morning run catches a full day of new reqs.
 | `seed_boards.py` | Derives `boards.yaml` from the seed URLs, plus a table of hand-verified boards. |
 | `store.py` | SQLite: `jobs`, `outreach`, `runs`. Run it bare to see the pipeline. |
 | `fetch.py` | Polls the boards, applies the title and geography gates, recovers JD text. |
-| `score.py` | Scores 1–10 via `claude -p`, in batches, from the profile. |
+| `score.py` | Scores 1–10 from the profile, via whichever engine is selected. |
 | `draft.py` | Writes referral drafts to `outbox/`. |
+| `tailor.py` | Writes a per-req resume to `tailored/`. Skips aggregator reqs and reqs with no JD. |
 | `digest.py` | Writes `digest/YYYY-MM-DD.md`. The one file you read. |
 | `mark.py` | Moves a job along after you act. The only thing you type. |
-| `run.py` | Runs the four stages in order. What cron calls. |
+| `run.py` | Runs the five stages in order. What cron calls. |
+| `engine.py` | Picks the engine from `runtime.engine`. Run it bare to see which one is active. |
+| `engine_heuristic.py` | The free, offline, deterministic engine. Run it bare to validate the scoring config. |
+| `engine_claude.py` | The `claude -p` engine, batched and parallel. |
+| `claudecall.py` | Subprocess plumbing for the above. Untouched by the heuristic path. |
+| `referral_templates.py` | The eighteen-variant draft template bank, plus the slot machinery. |
+| `resume_master.py` | Parses `config/resume.md` into claims, so tailoring can reorder without inventing. |
+| `calibrate.py` | Measures the heuristic engine against scores a stronger engine already produced. |
+| `CALIBRATION.md` | What that measurement says, and how to re-derive it. |
 | `discover.py` | One-off: fingerprints a careers page for an ATS. Used to add boards, not in the daily run. |
 | `EMAIL-ALERTS.md` | How to cover the companies that cannot be polled. |
 
