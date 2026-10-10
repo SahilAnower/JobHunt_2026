@@ -33,7 +33,7 @@ from string import Template
 # referral, warm, lane A
 T1 = """Hi [name],
 
-$company has a $role open ($req). I work on $skills_2 at Amazon, and that is most of what the
+$company has a $role open ($req). I $work_verb on $skills_2$employer_clause, and that is most of what the
 req describes.$hook_clause
 
 $warm_clause Would you be willing to refer me? $geo_clause
@@ -64,8 +64,8 @@ $short_name"""
 # referral, cold, lane A
 T4 = """Hi [name],
 
-We haven't spoken, so I'll be quick. $company has a $role open ($req) and I'm applying. I'm a
-backend engineer at Amazon working on $skills_2.$hook_clause
+We haven't spoken, so I'll be quick. $company has a $role open ($req) and I'm applying. $be_phrase a
+backend engineer$employer_clause working on $skills_2.$hook_clause
 
 $geo_clause If you're on or near that team, would you consider a referral? If not, no worries
 at all.
@@ -114,7 +114,7 @@ $short_name"""
 T9 = """Hi [name],
 
 Cold message about $company's $role req ($req). I shipped a multi-agent Gen-AI agent into
-production at Amazon, so $skills_2 is something I've actually run rather than read about.$hook_clause
+production$employer_clause, so $skills_2 is something I've actually run rather than read about.$hook_clause
 
 $geo_clause Would you be open to referring me?
 
@@ -132,8 +132,8 @@ $short_name"""
 # email, warm, lane A
 T11 = """Hi [name],
 
-I'm writing about the $role req at $company ($req). I'm an SDE at Amazon, two and a bit years
-in, and my day job is $skills_3.$hook_clause
+I'm writing about the $role req at $company ($req). $be_phrase an SDE$employer_clause$tenure_clause, and most of my recent work is
+$skills_3.$hook_clause
 
 $warm_clause I'm looking to move for $reason_for_leaving, and this req is the closest match
 I've seen to what I already do. $geo_clause
@@ -148,7 +148,7 @@ $short_name"""
 T12 = """Hi [name],
 
 The $role req at $company ($req) landed in my search this morning and I'd like to go for it. I
-work on $skills_3 at Amazon.$hook_clause
+$work_verb on $skills_3$employer_clause.$hook_clause
 
 $warm_clause The move is about $reason_for_leaving. $geo_clause
 
@@ -163,7 +163,7 @@ $short_name"""
 T13 = """Hi [name],
 
 We haven't met. I'm applying to the $role req at $company ($req) and I'd rather a person saw it
-than a filter. I'm an SDE at Amazon working on $skills_3.$hook_clause
+than a filter. $be_phrase an SDE$employer_clause working on $skills_3.$hook_clause
 
 $geo_clause I'm moving for $reason_for_leaving.
 
@@ -191,7 +191,7 @@ $short_name"""
 T15 = """Hi [name],
 
 About the $role req at $company ($req). I built and shipped a multi-agent Gen-AI agent that
-writes post-incident reports at Amazon, which puts me in $skills_3.$hook_clause
+writes post-incident reports$employer_clause, which puts me in $skills_3.$hook_clause
 
 $warm_clause I'm looking to move for $reason_for_leaving, into work where the agent side is the
 job rather than a side project. $geo_clause
@@ -219,7 +219,7 @@ $short_name"""
 T16 = """Hi [name],
 
 Cold note about the $role req at $company ($req). I shipped a production multi-agent agent for
-incident write-ups at Amazon, so $skills_3 is work I've done rather than a course I took.$hook_clause
+incident write-ups$employer_clause, so $skills_3 is work I've done rather than a course I took.$hook_clause
 
 $geo_clause I'm moving for $reason_for_leaving.
 
@@ -256,7 +256,13 @@ BANK: dict[tuple[str, str, str], list[str]] = {
 FALLBACK_BUCKET = ("referral", "cold", "A")
 
 SLOTS = ("company", "role", "req", "url", "skills_2", "skills_3", "geo_clause",
-         "short_name", "reason_for_leaving", "hook_clause", "warm_clause", "warm_path")
+         "short_name", "reason_for_leaving", "hook_clause", "warm_clause", "warm_path",
+         # Employer is a slot, not literal text, because the owner will not always work where
+         # they work today. $employer_clause carries its own leading " at " so an unset
+         # employer leaves a grammatical sentence instead of a dangling preposition, and
+         # $work_verb / $be_phrase / $tenure_clause carry the tense so a draft never claims
+         # current employment after it has ended.
+         "employer_clause", "work_verb", "be_phrase", "tenure_clause")
 
 WORD_BUDGET = {"referral": 90, "email": 130}
 
@@ -439,6 +445,15 @@ def draft_one(row, profile: dict, ctx, kind: str, *, score_one) -> tuple[str, st
     if not short_name:
         raise RuntimeError("config/profile.yaml: candidate.short_name is required for drafting")
 
+    # Employer, tense and tenure come from config rather than the template text. The owner is
+    # leaving the employer these templates were written around, and a draft that says "I work
+    # on X at <employer>" after that is a claim about the present that is no longer true. An
+    # absent employer is not an error: $employer_clause carries its own " at ", so omitting it
+    # yields "I work on Java and Spring Boot, and that is most of what the req describes."
+    employer = str(cand.get("employer") or "").strip()
+    employed_now = bool(cand.get("employer_is_current", True))
+    tenure = str(cand.get("tenure_phrase") or "").strip()
+
     d = profile.get("drafting") or {}
     verdict = score_one(row, ctx)
     desc = str(_get(row, "description") or "")
@@ -480,6 +495,10 @@ def draft_one(row, profile: dict, ctx, kind: str, *, score_one) -> tuple[str, st
                        if hook else "",
         "warm_clause": f"Context on my side: {warm_path}" if warm_path else "",
         "warm_path": warm_path,
+        "employer_clause": f" at {employer}" if employer else "",
+        "work_verb": "work" if employed_now else "worked",
+        "be_phrase": "I'm" if employed_now else "I was",
+        "tenure_clause": f", {tenure}" if tenure else "",
     }
 
     message = _render(template, slots)

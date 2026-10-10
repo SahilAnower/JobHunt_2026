@@ -15,6 +15,13 @@ candidate:
   phone: "+91 0000000000"
   base_city: Hyderabad         # "home" geography — roles here need no relocation
   country: India
+  # Where you work now, used by the outreach drafts. Leave `employer` blank and the drafts
+  # simply omit it rather than leaving a dangling "at ". Flip `employer_is_current` to false
+  # the day you leave: it switches the drafts from "I work on X at Y" to "I worked on X at Y",
+  # so a draft never claims a job you no longer hold.
+  employer: Example Corp
+  employer_is_current: true
+  tenure_phrase: just over two years in   # blank is fine; omitted cleanly when empty
   links:
     linkedin: https://www.linkedin.com/in/your-handle
     github: https://github.com/your-handle

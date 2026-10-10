@@ -271,6 +271,10 @@ def test_no_slot_sources_the_situation_block_or_the_never_mention_list(ctx):
     assert set(rt.SLOTS) == {
         "company", "role", "req", "url", "skills_2", "skills_3", "geo_clause", "short_name",
         "reason_for_leaving", "hook_clause", "warm_clause", "warm_path",
+        # Classified: all four read candidate.employer / employer_is_current / tenure_phrase.
+        # That is owner-authored identity config, not the `situation` block and not the
+        # `never_mention` list, so none of them can leak a phrase the backstop guards.
+        "employer_clause", "work_verb", "be_phrase", "tenure_clause",
     }
 
 
