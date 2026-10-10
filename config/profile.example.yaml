@@ -266,10 +266,303 @@ targets:
   comp_risk:
     - Example Bank
 
+# ---------------------------------------------------------------- the heuristic engine's knobs
+
+# Read ONLY by `engine: heuristic`. Every key is optional: omit the whole block and the defaults
+# in engine_heuristic.DEFAULTS apply, which are the calibrated values recorded in CALIBRATION.md.
+# A test asserts this block round-trips to those defaults, so the two cannot drift.
+#
+# Tune `base` first. It shifts how many reqs clear score_threshold without changing their order,
+# so raise it for a fuller digest and lower it for a stricter one.
+#
+# Four rules the loader enforces at startup rather than letting them fail silently:
+#   1. Every weight is SIGNED and added as-is. Penalties are negative and a *_cap is a negative
+#      floor. A positive value on a penalty key is a startup error naming the key.
+#   2. A *_saturate key is a divisor and must be positive.
+#   3. Every term in every vocabulary must be lowercase. The matcher builds lowercase-only
+#      character classes, so an uppercase term would never match. Quote numerals ("2", not 2)
+#      so they load as strings.
+#   4. A term belongs to exactly one skills tier, must not be on your resume's "Never claim"
+#      list, and every aliases key must name a term that exists in a tier.
+#
+# One matching trap worth knowing: a term starting with punctuation will not match when that
+# punctuation follows a letter. Spell the whole token, `asp.net`, not the suffix, `.net`.
+#
+# `skills` weights encode how central a thing is to YOUR resume, not how popular it is in the
+# market. The `boilerplate` tier is different in kind: it holds vocabulary every JD uses that
+# this resume does not evidence at all, and its ENTIRE summed contribution is capped at
+# `boilerplate_cap`. Do not promote a term into a scored tier to boost it; if the resume gained
+# the skill, add it to the resume first and then move the term.
+
+scoring:
+  my_yoe: 2.4
+  tolerance: 1.0
+  below_at: 1.0
+  base: 3.7
+  base_no_jd: 4.2
+  ceiling: 9
+  weights:
+    yoe_in_band: 1.3
+    yoe_below_band: -1.0
+    yoe_per_year_over: -0.55
+    yoe_floor: -2.2
+    overlap_max: 3.0
+    overlap_saturate: 4.0
+    boilerplate_cap: 0.5
+    off_lane_max: -2.0
+    off_lane_saturate: 1.5
+    never_claim_per: -0.6
+    never_claim_cap: -1.8
+    cs_degree_required: -0.8
+    services_per: -0.8
+    services_cap: -2.4
+    title_in_band: 0.5
+    title_above_band: -0.5
+    title_below_band: -1.6
+    title_excluded: -2.0
+    target_employer: 0.8
+    comp_risk_employer: 0.0
+    no_jd_title_in_band: 2.6
+    no_jd_target_employer: 2.6
+    no_jd_title_excluded: -2.6
+  geo_points:
+    home: 0.6
+    remote: 0.5
+    relocate: 0.0
+    india: 0.0
+    unclear: -0.4
+  geo_points_no_jd:
+    home: 0.8
+    remote: 0.6
+    relocate: 0.0
+    india: 0.0
+    unclear: 0.3
+  source_bonus:
+    instahyre: -0.3
+    seed: -0.1
+    smartrecruiters: -1.2
+    avature: -1.2
+    radancy: -0.6
+    oracle: 0.4
+    greenhouse: 0.4
+  source_bonus_default: 0.2
+  speed_points:
+    services: 0.0
+    comp_risk: 0.0
+    target_bigco: 0.0
+    aggregator: 0.0
+    startup: 0.0
+    default: 0.0
+  skills:
+    core:
+      java: 1.0
+      spring boot: 1.0
+      distributed systems: 0.9
+      aws: 0.8
+      microservices: 0.7
+      spring: 0.7
+      kafka: 0.7
+      dynamodb: 0.6
+      cdk: 0.6
+      rabbitmq: 0.5
+      observability: 0.5
+      infrastructure as code: 0.5
+      multi-region: 0.5
+      lambda: 0.5
+      redis: 0.4
+      cloudwatch: 0.4
+      rest api: 0.4
+      system design: 0.4
+      design patterns: 0.3
+      object-oriented: 0.3
+      postgresql: 0.3
+      mysql: 0.3
+      mongodb: 0.3
+      docker: 0.2
+      kubernetes: 0.2
+    lane_b:
+      agentic: 0.9
+      multi-agent: 0.9
+      llm: 0.8
+      genai: 0.6
+      agent: 0.3
+    secondary:
+      python: 0.3
+      graphql: 0.2
+      data structures: 0.2
+      algorithms: 0.2
+      c++: 0.2
+      javascript: 0.15
+      node.js: 0.15
+      react: 0.1
+      jenkins: 0.1
+    boilerplate:
+      sqs: 0.1
+      s3: 0.1
+      ecs: 0.1
+      cloudformation: 0.1
+      sns: 0.1
+      high throughput: 0.1
+      low latency: 0.1
+      ci/cd: 0.1
+      rag: 0.1
+      langchain: 0.1
+      bedrock: 0.1
+      typescript: 0.1
+      scalable: 0.1
+      restful: 0.1
+    aliases:
+      spring boot:
+      - spring boot
+      - springboot
+      - spring-boot
+      node.js:
+      - node.js
+      - nodejs
+      - node js
+      object-oriented:
+      - object-oriented
+      - object oriented
+      - oop
+      - ood
+      infrastructure as code:
+      - infrastructure as code
+      - iac
+      ci/cd:
+      - ci/cd
+      - cicd
+      - ci cd
+      rest api:
+      - rest api
+      - rest apis
+      - restful api
+      postgresql:
+      - postgresql
+      - postgres
+      multi-agent:
+      - multi-agent
+      - multi agent
+      - multiagent
+      genai:
+      - genai
+      - gen ai
+      - generative ai
+      llm:
+      - llm
+      - llms
+      - large language model
+  in_band_titles:
+  - ii
+  - '2'
+  - sde 2
+  - sde ii
+  - mts
+  - smts
+  - member of technical staff
+  above_band_titles:
+  - iii
+  - '3'
+  - '4'
+  - '5'
+  below_band_titles:
+  - jr
+  - jr.
+  - junior
+  - graduate
+  - fresher
+  - associate
+  - trainee
+  - entry level
+  - entry-level
+  - apprentice
+  - l1
+  - sde 1
+  - sde i
+  off_lane_titles:
+    frontend: 1.0
+    front end: 1.0
+    front-end: 1.0
+    ui developer: 1.0
+    data engineer: 1.0
+    data scientist: 1.0
+    qa: 1.0
+    sdet: 1.0
+    test engineer: 1.0
+    automation engineer: 0.8
+    devops: 0.8
+    site reliability: 0.6
+    support engineer: 1.0
+    salesforce: 1.0
+    sap: 1.0
+    android: 1.0
+    ios: 1.0
+    mobile: 0.8
+  off_lane_dense:
+    react: 4
+    angular: 3
+    vue: 3
+    css: 3
+    html: 3
+    selenium: 2
+    cypress: 2
+    jest: 3
+    figma: 2
+    tableau: 2
+    power bi: 2
+  off_lane_dense_weight: 0.6
+  services_signals:
+  - client requirements
+  - client projects
+  - staffing
+  - contract to hire
+  - c2h
+  - third party payroll
+  - deputed
+  - consulting services
+  - it services
+  - shift timings
+  - immediate joiner
+  - service bond
+  never_claim_extra:
+  - golang
+  - dotnet
+  - asp.net
+  - .net core
+  - c sharp
+  - objective-c
+  speed_notes:
+    services: Fast loop, but the comp band is the problem.
+    comp_risk: 6-10 weeks; confirm the India band early.
+    target_bigco: 6-10 weeks; big-company loop, several rounds.
+    aggregator: Unknown; aggregator listing, recruiter sets the pace.
+    startup: 3-5 weeks; small org, short loop.
+    default: 4-8 weeks if a referral surfaces it.
+
 runtime:
   timezone: Asia/Kolkata
-  claude_bin: claude         # the Claude Code CLI; scoring and drafting shell out to it
-  score_threshold: 7         # the referral bar. 7+ gets a draft written
+  # Which engine does the judgement work in score.py, draft.py and tailor.py.
+  #
+  #   heuristic  the default. A deterministic, weighted rule set in this repo. No subprocess,
+  #              no network, no account, free forever. Scores from the vocabularies in the
+  #              `scoring:` block below, drafts from the tracked template bank in
+  #              referral_templates.py, and tailors by reordering config/resume.md.
+  #   claude     shells out to `claude -p` on your Claude subscription. Better judgement,
+  #              especially on a JD that needs reading rather than matching, but it needs the
+  #              CLI on PATH and a live session.
+  #   ollama     accepted as a value and NOT implemented on this branch. It errors with a
+  #              sentence rather than silently falling back, because an owner who writes this
+  #              wants a local model and quietly giving them something else is worse.
+  #
+  # Omit the key entirely and you get `heuristic`. Any stage takes `--engine` to override it
+  # for one run, which is how you compare the two without editing this file.
+  engine: heuristic
+  claude_bin: claude         # the Claude Code CLI, used only when engine: claude
+  score_threshold: 7         # the referral bar. 7+ gets a draft written.
+                             # The heuristic engine is noisier than claude at this bar: it
+                             # promotes roughly twice as many reqs past 7. See CALIBRATION.md
+                             # before changing it — raising it to 8 halves the volume but drops
+                             # more than half of the reqs claude would have promoted, and
+                             # drafting and tailoring are capped per run by their own --limit.
   digest_below_bar: 20       # how many near-misses the collapsed "Below the bar" block lists.
                              # Raise this first when the digest feels thin. score_threshold also
                              # gates drafting and resume tailoring, so lowering that sends every

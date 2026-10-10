@@ -138,6 +138,54 @@ If you edit `profile.yaml` in a way that changes the bar — a new `exclude_titl
 different `floor_lpa`, a rewritten `situation` — run `python3 score.py --rescore` so the
 existing pipeline is judged by the new rules.
 
+### Choosing an engine
+
+Three stages need judgement: score, draft and tailor. Which engine does it is one profile key.
+
+```yaml
+runtime:
+  engine: heuristic        # the default. Omit the key and you get this.
+```
+
+```bash
+python3 run.py                       # whatever runtime.engine says
+python3 score.py --engine claude     # override for one run, no config edit
+python3 score.py --dry-run           # see the per-dimension breakdown before committing
+python3 engine.py                    # print which engine the current profile selects
+python3 engine_heuristic.py          # validate the scoring config and vocabularies
+```
+
+**`heuristic`** is a deterministic rule set in this repo. No subprocess, no network, no account,
+free forever. It scores from the weighted vocabularies in the profile's `scoring:` block,
+drafts by filling a tracked template bank, and tailors by reordering `config/resume.md`.
+
+**`claude`** shells out to `claude -p` on a Claude subscription. Better judgement, and it needs
+the CLI on PATH and a live session.
+
+**`ollama`** is accepted as a value and is not implemented here. It errors with a sentence.
+
+What the heuristic engine genuinely does worse, measured against 806 reqs Claude had already
+scored (`CALIBRATION.md` has the numbers and how to re-derive them):
+
+- **It is noisier at the bar.** Rank correlation with Claude is +0.52 overall and +0.58 on the
+  reqs that have JD text. At the 7+ bar it keeps 103 of the 137 reqs Claude promoted and admits
+  158 more. Expect to skim and discard, where Claude's digest was mostly worth reading.
+- **`speed_note` is a guess about the company, not about the req.** Claude read the JD; this is
+  a six-bucket lookup on company shape. Treat it as a rough prior, not an estimate.
+- **It matches vocabulary, it does not read.** A JD that says the right words about the wrong
+  job scores well. A JD that describes exactly the right work in unusual words scores badly.
+- **Drafts are templates.** Eighteen variants keyed on the job key, so two asks in one week do
+  not read identically. That is not the same as a message typed for one specific person. The
+  **read it aloud** checklist item and filling in the greeting by hand are now load-bearing.
+- **Tailoring reorders and annotates; it does not rephrase.** Claude could restate a bullet in
+  the JD's vocabulary. A script cannot do that safely, so `WHAT CHANGED` now says "moved"
+  rather than "rewrote", and no bullet is ever dropped to fit the page.
+
+What it does not do worse: it never invents a skill, it never claims anything outside
+`config/resume.md`, and it is reproducible — the same req scores the same way every run, so a
+score that looks wrong can be traced through `score.py --dry-run` to the dimension that caused
+it.
+
 ### Per-stage limits
 
 Each stage caps how much it does in one pass, so a single run cannot drain a board or spend an
