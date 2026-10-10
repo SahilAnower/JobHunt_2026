@@ -323,3 +323,24 @@ def test_every_display_name_is_a_real_vocabulary_term(ctx):
     # applying, so the message quietly regresses to lowercase.
     unknown = sorted(set(rt.DISPLAY) - set(ctx.skills))
     assert not unknown, unknown
+
+
+@pytest.mark.parametrize("marker", [
+    "\u25cf", "\u2022", "\u25aa", "\u25e6", "\u2023", "\u00b7", "\u27a2", "-", "*",
+])
+def test_a_jd_bullet_glyph_never_reaches_the_message(marker):
+    # A real JD bulleted with "\u25cf" put "The posting mentions \u25cf Proficiency in Java" into a
+    # message meant for a human. The strip set covered "\u2022" and not "\u25cf", so this asserts
+    # the class rather than the one glyph that was reported.
+    out = rt._strip_list_marker(f"{marker} Proficiency in Java and Spring Boot")
+    assert out == "Proficiency in Java and Spring Boot"
+
+
+@pytest.mark.parametrize("numbered", ["1. ", "2) ", "a) ", "b. "])
+def test_list_numbering_is_stripped_too(numbered):
+    assert rt._strip_list_marker(f"{numbered}Build Java microservices") == "Build Java microservices"
+
+
+def test_stripping_leaves_an_unbulleted_line_alone():
+    line = "Proficiency in Java and Spring Boot"
+    assert rt._strip_list_marker(line) == line

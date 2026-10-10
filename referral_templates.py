@@ -340,6 +340,25 @@ def pick_variant(key: str, kind: str, warmth: str, lane: str) -> tuple[str, str]
     return variants[idx], note
 
 
+# JDs are pasted out of Word, Workday and PDF exports, and every one of them bullets its
+# requirements with a different glyph. A fixed strip set caught "\u2022" but not "\u25cf", which
+# put "The posting mentions \u25cf Proficiency in Java" into a message meant for a human. Match
+# the class, not a list: anything in the geometric-shapes and dingbat ranges that starts a line,
+# plus "1." / "a)" style numbering.
+BULLET_RUN = re.compile(
+    r"^[\s\-*\u00b7\u00bb\u2022\u2023\u2043\u2219\u203a\u2713\u2714"
+    r"\u25a0-\u25ff\u2756\u276f\u27a2\u2794-\u27bf]+"
+)
+LEADING_NUMBER = re.compile(r"^(?:\d{1,2}|[a-z])[.)]\s+", re.I)
+
+
+def _strip_list_marker(text: str) -> str:
+    """Remove whatever the JD used to bullet this line, so a hook reads as a sentence."""
+    out = BULLET_RUN.sub("", text)
+    out = LEADING_NUMBER.sub("", out)
+    return out.strip()
+
+
 def jd_hook(desc: str, ctx, engine_heuristic) -> str:
     """
     One concrete, checkable detail about the work, lifted from the JD and never generated.
@@ -355,7 +374,7 @@ def jd_hook(desc: str, ctx, engine_heuristic) -> str:
     core = {t for t, tier in ctx.tier_of.items() if tier == "core"}
     off = set((ctx.cfg.get("off_lane_titles") or {}).keys())
     for raw in re.split(r"(?<=[.!?])\s+|\n", desc):
-        clause = raw.split(",")[0].strip(" -*\u2022\t")
+        clause = _strip_list_marker(raw.split(",")[0])
         clause = " ".join(clause.split())
         if not clause or len(clause.split()) > HOOK_MAX_WORDS or len(clause.split()) < 4:
             continue
