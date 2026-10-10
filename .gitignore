@@ -5,6 +5,14 @@ jobhunt.db.*
 config/profile.yaml
 config/seed.yaml
 config/boards.yaml
+# Backup copies of the above. config/profile.yaml.bak reached the remote in a05335b carrying a
+# name, email, phone, LinkedIn URL, resume_summary and the situation block, because the
+# patterns above match the exact filenames and nothing matched a suffixed copy. Write backups
+# outside the repo instead; these patterns are the backstop.
+config/*.bak
+config/*.bak-*
+config/*.orig
+*~
 outbox/
 digest/
 logs/
