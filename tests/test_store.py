@@ -385,3 +385,89 @@ def test_promoted_still_filters_on_the_threshold_and_the_status(conn):
     closed = seed_at(conn, "Acme", "4", 9, description=JD)
     conn.execute("UPDATE jobs SET still_open = 0 WHERE key = ?", (closed,))
     assert [r["key"] for r in store.promoted(conn, 7)] == [keep]
+
+
+# ------------------------------------------------------------------- per-company cap
+
+def rows_for(*companies):
+    """Plain dicts, because cap_per_company only ever reads `company`."""
+    return [{"company": c, "score": 9 - i} for i, c in enumerate(companies)]
+
+
+def test_five_reqs_at_one_company_keep_two_and_defer_three():
+    rows = rows_for("Acme", "Acme", "Acme", "Acme", "Acme")
+    kept, over = store.cap_per_company(rows, 2)
+    assert len(kept) == 2
+    assert len(over) == 3
+    # Nothing invented and nothing lost: the two halves reconstruct the input exactly.
+    assert kept + over == rows
+
+
+def test_the_cap_preserves_the_incoming_score_order_in_both_halves():
+    # promoted() hands rows over already ordered by score, so the split must not re-sort.
+    rows = rows_for("Acme", "Acme", "Acme", "Acme")
+    kept, over = store.cap_per_company(rows, 2)
+    assert [r["score"] for r in kept] == [9, 8]
+    assert [r["score"] for r in over] == [7, 6]
+
+
+def test_the_cap_counts_per_company_not_overall():
+    rows = rows_for("Acme", "Bosch", "Acme", "Bosch", "Acme")
+    kept, over = store.cap_per_company(rows, 2)
+    assert [r["company"] for r in kept] == ["Acme", "Bosch", "Acme", "Bosch"]
+    assert [r["company"] for r in over] == ["Acme"]
+
+
+def test_a_company_under_the_cap_is_untouched():
+    rows = rows_for("Acme", "Bosch", "Citrine")
+    kept, over = store.cap_per_company(rows, 2)
+    assert kept == rows
+    assert over == []
+
+
+def test_the_cap_groups_companies_case_and_space_insensitively():
+    # The same employer arrives spelled differently from different boards, and a cap that
+    # counted "Acme" and "acme " separately would not be a cap at all.
+    rows = rows_for("Acme", "acme", " ACME ")
+    kept, over = store.cap_per_company(rows, 2)
+    assert len(kept) == 2 and len(over) == 1
+
+
+def test_a_cap_of_zero_means_no_cap_rather_than_an_empty_list():
+    """
+    A config typo must not blank the action list. Reading 0 literally would put every promoted
+    req into the overflow block, which looks like the pipeline broke.
+    """
+    rows = rows_for("Acme", "Acme", "Acme")
+    kept, over = store.cap_per_company(rows, 0)
+    assert kept == rows and over == []
+    assert store.cap_per_company(rows, -1) == (rows, [])
+
+
+def test_the_cap_defaults_to_two():
+    rows = rows_for("Acme", "Acme", "Acme")
+    assert store.cap_per_company(rows) == store.cap_per_company(rows, 2)
+    assert store.COMPANY_CAP == 2
+
+
+def test_the_cap_handles_an_empty_input_and_a_missing_company():
+    assert store.cap_per_company([], 2) == ([], [])
+    kept, over = store.cap_per_company([{"company": None}, {"company": None},
+                                        {"company": None}], 2)
+    assert len(kept) == 2 and len(over) == 1
+
+
+def test_the_cap_does_not_mutate_the_list_it_is_given():
+    rows = rows_for("Acme", "Acme", "Acme")
+    before = list(rows)
+    store.cap_per_company(rows, 2)
+    assert rows == before
+
+
+def test_the_cap_applied_to_promoted_keeps_the_highest_scoring_two(conn):
+    """End to end: the ordering promoted() establishes is the priority the cap respects."""
+    for i, score in enumerate([7, 9, 8, 7]):
+        seed_at(conn, "Acme", str(i), score, description=JD)
+    kept, over = store.cap_per_company(store.promoted(conn, 7), 2)
+    assert [r["score"] for r in kept] == [9, 8]
+    assert [r["score"] for r in over] == [7, 7]

@@ -255,10 +255,30 @@ value, so this table cannot drift out of date without the help text drifting too
 | `score.py` | `--limit` | 100, or every still-open req with `--rescore` | reqs scored |
 | `score.py` | `--batch` | `runtime.max_score_batch` (12) | reqs per scoring call (`claude` engine only) |
 | `draft.py` | `--limit` | 6 | drafts written |
+| `draft.py` | `--no-company-cap` | `runtime.company_cap` (2) | reqs per company drafted in one run |
 | `tailor.py` | `--limit` | 6 | resumes tailored |
 
 `draft.py` and `tailor.py` sit at 6 because you have to read every result by hand, which is
 true of both engines. `score.py` sits at 100 because twelve reqs share one call.
+
+### The per-company cap
+
+`runtime.company_cap` (default 2) bounds how many reqs from one employer reach the digest's two
+action lists and a `draft.py` run at once. The boards are lumpy in a way score ordering makes
+worse: JP Morgan Chase alone holds 54 open un-actioned reqs, Bosch 29 and Mastercard 21, so a
+list ordered by score is mostly one company and six drafts in a morning all go to it. 39 of 132
+applications so far went to JPMC — 30% of the search in one employer, which is a worse bet than
+the same effort across three.
+
+**Nothing is dropped.** Reqs over the cap appear in a collapsed *"More open reqs at companies
+already in today's list"* block in the digest, and a later run drafts them. The cap orders
+attention; it does not filter. `digest.py`'s "req(s) above the bar" count still counts all of
+them.
+
+Drafted reqs and fresh reqs are capped separately, so a draft already sitting in `outbox/`
+cannot be pushed out of "Do today" by two fresh reqs at the same company. `draft.py --key`
+ignores the cap, because naming a key is an instruction about one req. `--no-company-cap`
+ignores it for one run, and `company_cap: 0` turns it off entirely.
 
 Two related knobs *are* profile keys, under `runtime:`, because they tune every run and depend
 on the machine rather than on the day: `max_score_batch` (reqs per scoring call) and

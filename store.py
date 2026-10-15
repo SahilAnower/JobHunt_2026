@@ -17,6 +17,7 @@ property is what lets run.py be scheduled without any state outside this file.
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import json
 import re
@@ -431,6 +432,42 @@ def has_jd(job) -> bool:
     except (IndexError, KeyError, TypeError):
         return False
     return len(desc or "") >= JD_MIN_CHARS
+
+
+COMPANY_CAP = 2
+
+
+def cap_per_company(rows, cap: int = COMPANY_CAP) -> tuple[list, list]:
+    """
+    Split `rows` into (kept, overflow), keeping at most `cap` rows per company. Pure.
+
+    Order-preserving in both halves, so the score ordering `promoted` established survives the
+    split and the overflow is itself in score order. The input order IS the priority: this
+    takes the first `cap` rows each company offers and defers the rest.
+
+    Why this exists. 39 of 132 applications went to JP Morgan Chase — 30% of the search in one
+    company — and the digest's action list is what drives that: JPMC has 54 open un-actioned
+    reqs, Bosch 29, Mastercard 21, so a list ordered by score alone is mostly one employer
+    whatever the scores say. Concentrating a search in one company is a worse bet than the same
+    effort spread across three, and a referral ask is per-company anyway.
+
+    This DEFERS, it does not drop. The caller is responsible for rendering the overflow
+    somewhere, and the digest does: reqs over the cap go into a collapsed block rather than
+    disappearing. A function that silently hid 52 open reqs would be a data-loss bug dressed
+    as a feature.
+
+    `cap <= 0` means no cap, rather than an empty list. A cap of zero is a config typo, and the
+    failure mode of reading it literally is a blank action list with every req in the overflow
+    block — a worse outcome than ignoring it. `--no-company-cap` is the supported way off.
+    """
+    if cap <= 0:
+        return list(rows), []
+    kept, overflow, seen = [], [], collections.Counter()
+    for r in rows:
+        company = (r["company"] or "").strip().casefold()
+        seen[company] += 1
+        (kept if seen[company] <= cap else overflow).append(r)
+    return kept, overflow
 
 
 def active(conn) -> list[sqlite3.Row]:

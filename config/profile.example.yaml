@@ -662,6 +662,13 @@ runtime:
                              # Raise this first when the digest feels thin. score_threshold also
                              # gates drafting and resume tailoring, so lowering that sends every
                              # near-miss through both stages; this only changes what you see.
+  company_cap: 2             # how many reqs per company reach the digest's action lists and a
+                             # draft run at once. The boards are lumpy — one employer can hold
+                             # 50 open reqs in band — so a list ordered by score alone becomes
+                             # one company, and six drafts in a morning all go to it. Reqs over
+                             # the cap are NOT dropped: the digest lists them in a collapsed
+                             # block and a later run drafts them. Set to 0 for no cap, or pass
+                             # `draft.py --no-company-cap` for one run.
   max_parallel_claude: 4     # concurrent `claude -p` calls in score.py and draft.py. Each is a
                              # subprocess waiting on a network round trip, so they overlap well.
                              # Set to 1 for the old strictly-serial behaviour.

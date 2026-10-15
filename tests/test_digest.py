@@ -183,3 +183,109 @@ def test_the_marker_does_not_change_the_threshold_or_the_sections(conn):
     assert "Below the bar (1)" in text
     for section in ("## Do today", "## In motion", "## The read"):
         assert section in text
+
+
+# ------------------------------------------------------------------- the per-company cap
+
+CAP_PROFILE = {"runtime": {"score_threshold": 7, "timezone": "Asia/Kolkata",
+                           "company_cap": 2}}
+
+
+# Five reqs that all clear the 7+ bar, so the cap is the only thing that can split them.
+CAP_SCORES = [9, 9, 8, 8, 7]
+
+
+def test_five_acme_reqs_are_all_present_two_in_the_table_and_three_deferred(conn):
+    """
+    The property that makes the cap an ordering and not a filter: every req still appears
+    somewhere. Hiding 52 open reqs that cleared the bar would be a data-loss bug.
+    """
+    keys = [scored(conn, "Acme", str(i), s, description=JD)
+            for i, s in enumerate(CAP_SCORES)]
+    text = digest.build(conn, CAP_PROFILE)
+
+    assert "## Scored 7+ and not yet acted on (2)" in text
+    assert "More open reqs at companies already in today's list (3)" in text
+    # Every one of the five is reachable from the digest, by its own posting URL.
+    for i in range(len(CAP_SCORES)):
+        assert f"https://example.test/Acme/{i}" in text
+    # Two rows in the main table, three in the overflow block.
+    assert len([ln for ln in text.splitlines() if ln.startswith("| ")
+                and "example.test/Acme" in ln]) == 2
+    block = text.split("More open reqs")[1].split("</details>")[0]
+    assert len([ln for ln in block.splitlines() if ln.startswith("- ")]) == 3
+
+
+def test_the_deferred_block_lists_the_lower_scoring_reqs(conn):
+    for i, s in enumerate(CAP_SCORES):
+        scored(conn, "Acme", str(i), s, description=JD)
+    text = digest.build(conn, CAP_PROFILE)
+    block = text.split("More open reqs")[1].split("</details>")[0]
+    # The two 9s are kept, so the overflow is the 8s and the 7 — the cap defers by score.
+    assert "8/10" in block and "7/10" in block
+    assert "9/10" not in block
+
+
+def test_the_cap_does_not_fire_across_different_companies(conn):
+    for i, company in enumerate(["Acme", "Bosch", "Citrine", "Delta"]):
+        scored(conn, company, str(i), 8, description=JD)
+    text = digest.build(conn, CAP_PROFILE)
+    assert "## Scored 7+ and not yet acted on (4)" in text
+    assert "More open reqs" not in text
+
+
+def test_a_drafted_req_is_not_pushed_out_of_do_today_by_fresh_ones(conn):
+    """
+    Why the two sections are capped separately. A draft already written and waiting is the one
+    thing in the digest with a cost attached — the ask was prepared and not sent — so two
+    fresh Acme reqs must not bury it.
+    """
+    drafted_key = scored(conn, "Acme", "d", 7, description=JD)
+    store.add_outreach(conn, job_key=drafted_key, company="Acme", kind="referral",
+                       draft_path="outbox/waiting.md")
+    scored(conn, "Acme", "f1", 9, description=JD)
+    scored(conn, "Acme", "f2", 8, description=JD)
+
+    text = digest.build(conn, CAP_PROFILE)
+    do_today = text.split("## Do today")[1].split("## Scored")[0]
+    assert "outbox/waiting.md" in do_today
+    assert "More open reqs" not in text
+
+
+def test_the_above_the_bar_count_still_counts_every_promoted_req(conn):
+    """The cap defers; it must not make the digest understate the state of the search."""
+    for i, s in enumerate(CAP_SCORES):
+        scored(conn, "Acme", str(i), s, description=JD)
+    assert "5 req(s) above the bar" in digest.build(conn, CAP_PROFILE)
+
+
+def test_the_cap_defaults_to_two_when_the_profile_does_not_set_it(conn):
+    for i, s in enumerate([9, 9, 8, 8]):
+        scored(conn, "Acme", str(i), s, description=JD)
+    text = digest.build(conn, PROFILE)          # no company_cap key
+    assert "## Scored 7+ and not yet acted on (2)" in text
+    assert "More open reqs at companies already in today's list (2)" in text
+
+
+def test_a_company_cap_of_zero_shows_everything_in_the_main_table(conn):
+    for i, s in enumerate([9, 9, 8, 8]):
+        scored(conn, "Acme", str(i), s, description=JD)
+    off = {"runtime": {"score_threshold": 7, "company_cap": 0}}
+    text = digest.build(conn, off)
+    assert "## Scored 7+ and not yet acted on (4)" in text
+    assert "More open reqs" not in text
+
+
+def test_the_deferred_block_sits_after_section_two_and_before_in_motion(conn):
+    for i, s in enumerate([9, 9, 8]):
+        scored(conn, "Acme", str(i), s, description=JD)
+    text = digest.build(conn, CAP_PROFILE)
+    assert text.index("## Scored 7+") < text.index("More open reqs") < text.index("## In motion")
+
+
+def test_the_cap_does_not_add_or_remove_a_section(conn):
+    for i, s in enumerate([9, 9, 8]):
+        scored(conn, "Acme", str(i), s, description=JD)
+    text = digest.build(conn, CAP_PROFILE)
+    for section in ("## Do today", "## Scored 7+", "## In motion", "## The read"):
+        assert section in text

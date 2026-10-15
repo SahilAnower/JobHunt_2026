@@ -65,6 +65,7 @@ def jd_bullet(job) -> str:
 def build(conn, profile: dict) -> str:
     rt = jobprofile.runtime(profile)
     threshold = rt.get("score_threshold", 7)
+    cap = rt.get("company_cap", store.COMPANY_CAP)
     today = date.today().isoformat()
     L: list[str] = [f"# jobhunt digest — {today}", ""]
 
@@ -76,8 +77,18 @@ def build(conn, profile: dict) -> str:
         ).fetchall()
     }
 
+    # The per-company cap, applied to the two action sections SEPARATELY rather than to
+    # `promoted` as a whole. Section 1 holds reqs whose draft is already written and sitting in
+    # outbox/; burying one of those in a collapsed block because the same company also has two
+    # fresh reqs would be the one way this feature could cost the owner something real — an
+    # ask that was ready to send and never went. So a drafted req competes only with other
+    # drafted reqs for its slots, and a fresh one only with other fresh ones.
+    #
+    # Nothing is dropped either way. Both overflows are rendered below section 2.
+
     # 1. ready to send
-    ready = [j for j in promoted if j["key"] in drafted]
+    ready, ready_over = store.cap_per_company(
+        [j for j in promoted if j["key"] in drafted], cap)
     L += ["## Do today", ""]
     if ready:
         L.append("A draft is written and waiting. Read it, fix anything that is not your")
@@ -97,7 +108,8 @@ def build(conn, profile: dict) -> str:
     L.append("")
 
     # 2. new and scored
-    fresh = [j for j in promoted if j["key"] not in drafted]
+    fresh, fresh_over = store.cap_per_company(
+        [j for j in promoted if j["key"] not in drafted], cap)
     L += [f"## Scored {threshold}+ and not yet acted on ({len(fresh)})", ""]
     if fresh:
         L.append("| Score | Company | Role | Where | Lane | Time to offer |")
@@ -115,6 +127,19 @@ def build(conn, profile: dict) -> str:
     else:
         L.append("_Nothing new above the bar._")
     L.append("")
+
+    # 2b. what the cap deferred. Collapsed, because the point of the cap is that these are not
+    # today's work — but present, because they are open reqs that cleared the bar and a digest
+    # that silently dropped them would be lying about the state of the search.
+    deferred = ready_over + fresh_over
+    if deferred:
+        L += [f"<details><summary>More open reqs at companies already in today's list "
+              f"({len(deferred)})</summary>", "",
+              f"At most {cap} req(s) per company reach the lists above, so these are deferred "
+              f"rather than dropped.", ""]
+        for j in deferred:
+            L.append(f"- {j['score']}/10 {j['company']} — {link(j)}{jd_bullet(j)}")
+        L += ["", "</details>", ""]
 
     # 3. in motion
     live = store.active(conn)
