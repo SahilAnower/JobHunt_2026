@@ -315,6 +315,14 @@ scoring:
     yoe_floor: -2.2
     overlap_max: 3.0
     overlap_saturate: 4.0
+    # How much a skill match is worth depending on WHERE the JD names it. A term inside the
+    # requirements/qualifications block counts at `overlap_zone_mult` of its skills weight; a
+    # term named only in the preamble counts at `overlap_preamble_mult`, because marketing
+    # prose mentioning Java is weaker evidence than Java under "Requirements:". A JD with no
+    # such heading has no preamble to discount, so every term is a zone match and the number
+    # is unchanged. Set `overlap_preamble_mult: 1.0` to switch the distinction off.
+    overlap_zone_mult: 1.0
+    overlap_preamble_mult: 0.6
     boilerplate_cap: 0.5
     off_lane_max: -2.0
     off_lane_saturate: 1.5

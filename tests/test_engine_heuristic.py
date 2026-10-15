@@ -185,6 +185,66 @@ def test_boilerplate_tier_is_capped_well_below_saturation(ctx):
     assert "only generic cloud vocabulary matched" in v.reason
 
 
+def test_a_requirement_outweighs_the_same_term_in_the_preamble(ctx):
+    """
+    The point of the zone split. `requirements_zone` already separates what a JD requires from
+    what it merely says, and the never-claim dimension has used that split from the start.
+    Overlap did not, so marketing prose naming Java scored like a hard Java requirement.
+    """
+    preamble = eh.score_one(row(description="We are a Java shop at heart and we love "
+                                            "Spring Boot. Requirements: a good attitude."),
+                            ctx)
+    required = eh.score_one(row(description="We are a friendly team with a good attitude. "
+                                            "Requirements: Java and Spring Boot."), ctx)
+    assert preamble.points < required.points
+    assert preamble.parts["overlap"] < required.parts["overlap"]
+
+
+def test_a_jd_with_no_requirements_heading_is_unaffected_by_the_zone_split(ctx):
+    # No heading means the zone is the whole JD, so there is no preamble to discount. These
+    # are the heading-less aggregator JDs, which are the majority of the corpus.
+    jd = "Our stack is Java, Spring Boot, AWS and distributed systems."
+    assert eh.ZONE_HEAD.search(jd.lower()) is None
+    low = eh.pad(jd)
+    assert eh.requirements_zone(low) == low
+    v = eh.score_one(row(description=jd), ctx)
+    bonus, _ = eh.overlap_bonus(ctx, low, eh.requirements_zone(low))
+    # Five terms match (spring boot also matches spring) for 4.4 against a 4.0 saturation, so
+    # this JD earns the full overlap_max with the split exactly as it did without it.
+    assert v.parts["overlap"] == pytest.approx(eh.DEFAULTS["weights"]["overlap_max"])
+    assert bonus == pytest.approx(v.parts["overlap"])
+
+
+def test_a_preamble_multiplier_of_one_reproduces_the_unzoned_number(ctx):
+    # The escape hatch, and the proof that the only thing the split changes is the multiplier.
+    flat = eh.build_context({**PROFILE, "scoring": {"weights": {"overlap_preamble_mult": 1.0}}},
+                            MASTER)
+    jd = "We need Java and Spring Boot. Requirements: a good attitude."
+    zoned = eh.score_one(row(description=jd), ctx)
+    unzoned = eh.score_one(row(description=jd), flat)
+    # java 1.0 + spring boot 1.0 + spring 0.7, all in the preamble, of a 4.0 saturation.
+    strong = sum(ctx.skills[t] for t in ("java", "spring boot", "spring"))
+    w = eh.DEFAULTS["weights"]
+    assert unzoned.parts["overlap"] == pytest.approx(
+        w["overlap_max"] * strong / w["overlap_saturate"])
+    assert zoned.parts["overlap"] == pytest.approx(
+        w["overlap_max"] * strong * w["overlap_preamble_mult"] / w["overlap_saturate"])
+
+
+def test_a_term_in_both_zones_counts_once_at_the_better_multiplier(ctx):
+    both = eh.score_one(row(description="We need Java. Requirements: Java."), ctx)
+    only_zone = eh.score_one(row(description="We need a good attitude. Requirements: Java."),
+                             ctx)
+    assert both.parts["overlap"] == pytest.approx(only_zone.parts["overlap"])
+
+
+def test_the_matched_clause_is_ordered_by_effective_weight(ctx):
+    # java (1.0) in the preamble is worth 0.6; aws (0.8) under Requirements is worth 0.8, so
+    # the reason must name aws first even though java carries the larger skills weight.
+    v = eh.score_one(row(description="We are a Java shop. Requirements: AWS."), ctx)
+    assert v.reason.index("aws") < v.reason.index("java")
+
+
 def test_every_scored_term_is_evidenced_by_the_resume_or_the_profile(ctx):
     # The guard that stops the next fourteen free-points terms arriving unnoticed in core.
     assert ctx.warnings == (), ctx.warnings

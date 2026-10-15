@@ -56,6 +56,8 @@ DEFAULTS: dict = {
         "yoe_floor": -2.2,
         "overlap_max": 3.0,
         "overlap_saturate": 4.0,
+        "overlap_zone_mult": 1.0,
+        "overlap_preamble_mult": 0.6,
         "boilerplate_cap": 0.5,
         "off_lane_max": -2.0,
         "off_lane_saturate": 1.5,
@@ -600,6 +602,40 @@ def matched_skills(ctx: Ctx, low: str) -> list[tuple[str, float, str]]:
     return sorted(out, key=lambda x: (-x[1], x[0]))
 
 
+def overlap_bonus(ctx: Ctx, low: str, zone: str) -> tuple[float, list[tuple[str, float, str]]]:
+    """
+    The overlap bonus and the matched terms at their effective weights, zone-weighted.
+
+    `requirements_zone` already separates what a JD *requires* from what it merely *says*, and
+    the never-claim dimension has used that split from the start. Overlap did not: a term named
+    once in the marketing preamble ("we are a Java shop at heart") earned exactly what a term
+    listed under `Requirements:` earned, so prose scored like a hard requirement. A term inside
+    the zone is now worth `overlap_zone_mult` of its weight and a term only outside it
+    `overlap_preamble_mult`, each canonical term counted once at the better of the two.
+
+    The boilerplate tier is multiplied the same way and keeps its own `boilerplate_cap` sum, so
+    the cap still bounds the whole unevidenced tier rather than being applied per term.
+
+    When `ZONE_HEAD` finds no heading the zone IS the whole JD, so every term is a zone match
+    and the number is unchanged. That is the common case for heading-less aggregator JDs, and
+    it is deliberate: there is no preamble to discount when the JD has no structure to read.
+    """
+    w = ctx.w
+    zmult, pmult = float(w["overlap_zone_mult"]), float(w["overlap_preamble_mult"])
+    scored: list[tuple[str, float, str]] = []
+    for term, weight, tier in matched_skills(ctx, low):
+        in_zone = any(_present(ctx, zone, s) for s in ctx.spellings[term])
+        # `max` rather than zmult: "the better of the two" is the owner's config, not this
+        # function's assumption that the zone multiplier is the larger one.
+        scored.append((term, weight * (max(zmult, pmult) if in_zone else pmult), tier))
+    strong = sum(e for _, e, tier in scored if tier in EVIDENCED_TIERS)
+    boiler = min(sum(e for _, e, tier in scored if tier == "boilerplate"),
+                 float(w["boilerplate_cap"]))
+    sat = float(w["overlap_saturate"])
+    bonus = float(w["overlap_max"]) * min(strong + boiler, sat) / sat
+    return bonus, sorted(scored, key=lambda x: (-x[1], x[0]))
+
+
 def geo_bucket(ctx: Ctx, row) -> str:
     """
     The geo bucket, read and never written.
@@ -741,14 +777,11 @@ def score_one(row, ctx: Ctx) -> Verdict:
                 points += pen
                 clauses.append((20, f"JD asks {_num(yoe)}+ yrs vs {_num(cfg['my_yoe'])}"))
 
-        # 3. Resume overlap, weighted and saturating. The boilerplate tier sums separately and
-        # is capped, so a JD made of AWS service nouns cannot earn the evidenced bonus.
-        hits = matched_skills(ctx, low)
-        strong = sum(wt for _, wt, tier in hits if tier in EVIDENCED_TIERS)
-        boiler = min(sum(wt for _, wt, tier in hits if tier == "boilerplate"),
-                     float(w["boilerplate_cap"]))
-        sat = float(w["overlap_saturate"])
-        bonus = float(w["overlap_max"]) * min(strong + boiler, sat) / sat
+        # 3. Resume overlap, weighted, zone-weighted and saturating. A term under
+        # `Requirements:` outweighs the same term in the preamble, and the boilerplate tier
+        # sums separately and is capped, so a JD made of AWS service nouns cannot earn the
+        # evidenced bonus.
+        bonus, hits = overlap_bonus(ctx, low, zone)
         add("overlap", bonus)
         points += bonus
         named = [t for t, _, tier in hits if tier in EVIDENCED_TIERS][:4]
