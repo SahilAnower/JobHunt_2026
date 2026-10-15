@@ -219,7 +219,8 @@ value, so this table cannot drift out of date without the help text drifting too
 
 | Stage | Flag | Default | What it caps |
 |---|---|---|---|
-| `fetch.py --enrich` | `--enrich-limit` | 30 | posting pages fetched for missing JD text |
+| `fetch.py --enrich` | `--enrich-limit` | `runtime.enrich_limit` (120) | posting pages fetched for missing JD text |
+| `fetch.py --enrich` | `--enrich-max-attempts` | `runtime.enrich_max_attempts` (3) | failed attempts before a row is left alone |
 | `fetch.py --recheck-closed` | `--recheck-limit` | 60 | closed reqs re-probed |
 | `fetch.py --recheck-closed` | `--recheck-min-score` | 6 | score floor for re-probing (unscored always included) |
 | `score.py` | `--limit` | 100 | reqs scored |
@@ -445,6 +446,22 @@ endpoints return no description at all, and a req scored blind caps out around 6
 else falls back to fetching the posting page, which works on server-rendered pages and fails on
 the JS ones. A `404` or `410` there is not a failure — the req is gone, and it gets marked
 closed.
+
+Which rows get the budget is a decision, not an accident. Candidates are ordered by what the
+heuristic scorer makes of them as they stand, so a blind req it already puts at 6 or 7 — one JD
+away from the action list — is read before a blind req at 2, whose JD would change nothing the
+owner acts on. Within the same score, newest first.
+
+Every attempt is recorded (`enrich_attempts`, `enrich_last`, `enrich_note`), and after
+`runtime.enrich_max_attempts` failures a row is left alone. That is what makes the budget
+worth raising: the JS-shell careers pages and the URLs answering `403` used to come back every
+single run and spend it in front of rows that would have yielded text. Raise
+`--enrich-max-attempts` to give written-off rows another go.
+
+Enrichment only ever re-fetches a URL already in the database, so it reaches the same boards
+`fetch.py` already polls. Instahyre's `robots.txt` is `User-agent: *` with no `Disallow`, which
+is why its postings are fetched; Naukri, Cutshort and Wellfound disallow their job paths and are
+deliberately not polled and not enriched.
 
 ## Honest limitations
 

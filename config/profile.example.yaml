@@ -579,6 +579,16 @@ runtime:
                              # Set to 1 for the old strictly-serial behaviour.
   max_score_batch: 12        # reqs per scoring call — one call judging twelve is more
                              # consistent than twelve calls judging one
+  enrich_limit: 120          # posting pages `fetch.py --enrich` fetches per run to recover
+                             # missing JD text. A req scored with no JD caps out around 6, so
+                             # this is the cheapest way to raise scoring quality. Each one is
+                             # an HTTP request to someone else's server: eight at a time with
+                             # a per-worker delay. `--enrich-limit` overrides it for one run.
+  enrich_max_attempts: 3     # stop chasing a row after this many failed attempts. Most
+                             # failures are permanent — a JavaScript-shell careers page serves
+                             # the same shell tomorrow — and without a ceiling those rows come
+                             # back every run and spend the budget in front of rows that would
+                             # have yielded text. Raise it to give written-off rows another go.
   # Sent on every board request. Some ATS edges reject an obviously scripted agent.
   user_agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)
     Chrome/124.0 Safari/537.36

@@ -137,6 +137,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN label_score INTEGER")
     if "label_reason" not in have:
         conn.execute("ALTER TABLE jobs ADD COLUMN label_reason TEXT")
+    # What `fetch.py --enrich` has already tried on this row. Without it, enrichment has no
+    # memory: the JS-shell careers pages and the URLs that answer 403 come back into the
+    # candidate set every single morning, and they are precisely the rows that can never
+    # succeed. Three recorded failures and a row stops eating the budget, which is what makes
+    # a budget of 120 land on rows that might actually yield text.
+    if "enrich_attempts" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN enrich_attempts INTEGER NOT NULL DEFAULT 0")
+    if "enrich_last" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN enrich_last TEXT")
+    if "enrich_note" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN enrich_note TEXT")
 
 
 def job_key(company: str, title: str, url: str = "", req_id: str = "") -> str:
