@@ -148,6 +148,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN enrich_last TEXT")
     if "enrich_note" not in have:
         conn.execute("ALTER TABLE jobs ADD COLUMN enrich_note TEXT")
+    # Which engine wrote the score in this row. NULL means "written before this column
+    # existed", which for every row in the current corpus means claude. Without it a database
+    # that has been partly re-scored holds two different scales in one column with no way to
+    # tell the rows apart.
+    if "scored_by" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN scored_by TEXT")
 
 
 def job_key(company: str, title: str, url: str = "", req_id: str = "") -> str:
@@ -233,14 +239,70 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> bool:
     return True
 
 
-def set_score(conn, key: str, score: int, reason: str, lane=None, speed_note=None) -> None:
+def set_score(conn, key: str, score: int, reason: str, lane=None, speed_note=None,
+              scored_by: str | None = None) -> None:
+    """
+    Write a score. `scored_by` records which engine produced it.
+
+    That column is what makes a mixed database readable. The corpus is 918 rows of `claude`
+    judgement, and a heuristic run writes on the same scale without saying so, which is how a
+    column ends up holding two incomparable scales with no way to tell which row is which.
+    `COALESCE(?, scored_by)` so a caller that does not know leaves the existing value alone
+    rather than erasing it.
+    """
     conn.execute(
         """UPDATE jobs SET score = ?, score_reason = ?,
                   lane = COALESCE(?, lane), speed_note = ?,
+                  scored_by = COALESCE(?, scored_by),
                   status = CASE WHEN status = 'new' THEN 'scored' ELSE status END
            WHERE key = ?""",
-        (score, reason, lane, speed_note, key),
+        (score, reason, lane, speed_note, scored_by, key),
     )
+
+
+# Engines whose output is worth nothing as ground truth, because it can be re-derived from the
+# row at any time. The heuristic is a pure function of the JD and the profile: re-run it and you
+# get the same number back. Claude's judgement cannot be re-derived without spending the
+# owner's subscription on the whole corpus again, so that is what `label_score` is for.
+#
+# Getting this predicate wrong is not a cosmetic bug. Treating a heuristic score as a label
+# would have a second rescore quietly promote the first rescore's output to ground truth, and
+# then `calibrate.py --label-column label_score` would be measuring the heuristic against
+# itself and reporting a near-perfect correlation.
+REPLACEABLE_ENGINES = ("heuristic",)
+
+_IRREPLACEABLE = (
+    "score IS NOT NULL AND label_score IS NULL "
+    "AND (scored_by IS NULL OR scored_by NOT IN ('heuristic'))"
+)
+
+
+def protect_labels(conn) -> int:
+    """
+    Copy `score`/`score_reason` into `label_score`/`label_reason` for every row holding
+    judgement that cannot be re-derived. Returns how many rows were protected.
+
+    Called once, immediately before a rescore starts overwriting. Two rows are skipped: one
+    that already has a label — the label is the older and more trustworthy value — and one
+    whose score the heuristic wrote, which is not a label at all.
+    """
+    cur = conn.execute(
+        f"UPDATE jobs SET label_score = score, label_reason = score_reason "
+        f"WHERE {_IRREPLACEABLE}"
+    )
+    return cur.rowcount
+
+
+def unprotected_scores(conn) -> int:
+    """
+    Rows whose `score` is the only copy of judgement that cannot be re-derived.
+
+    This is the number a rescore would destroy for good, and what the gate in `score.py`
+    compares the label export against.
+    """
+    return conn.execute(
+        f"SELECT COUNT(*) c FROM jobs WHERE {_IRREPLACEABLE}"
+    ).fetchone()["c"]
 
 
 MISS_LIMIT = 3          # consecutive absences before a req is written off

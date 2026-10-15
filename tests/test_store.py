@@ -210,3 +210,75 @@ def test_already_closed_rows_are_ignored(conn):
     assert row(conn, key)["still_open"] == 0
     # A closed req is not reconsidered every run; that is what --recheck-closed is for.
     assert store.mark_closed(conn, "greenhouse", set(), verify=None) == (0, 0)
+
+
+# --- set_score and the label columns
+#
+# `label_score` is where Claude's judgement goes to survive a rescore, and `scored_by` is how a
+# mixed database stays readable. The property that matters most is the one in
+# test_a_heuristic_score_is_never_promoted_to_a_label: a heuristic score is a pure function of
+# the row, so treating it as ground truth would let a second rescore launder the first one's
+# output into the labels, and calibrate.py would then measure the heuristic against itself.
+
+def test_set_score_records_the_engine(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "good fit", scored_by="claude")
+    assert row(conn, key)["scored_by"] == "claude"
+
+
+def test_set_score_without_an_engine_leaves_the_old_one(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "good fit", scored_by="claude")
+    store.set_score(conn, key, 4, "on reflection")
+    r = row(conn, key)
+    assert r["score"] == 4
+    assert r["scored_by"] == "claude", "a caller that does not know must not erase it"
+
+
+def test_a_score_starts_with_no_label(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "good fit", scored_by="claude")
+    assert row(conn, key)["label_score"] is None
+    assert store.unprotected_scores(conn) == 1
+
+
+def test_protect_labels_copies_the_score_and_the_reason(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "good fit", scored_by="claude")
+    assert store.protect_labels(conn) == 1
+    r = row(conn, key)
+    assert (r["label_score"], r["label_reason"]) == (7, "good fit")
+    assert store.unprotected_scores(conn) == 0
+
+
+def test_protect_labels_does_not_touch_an_existing_label(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "claude said so", scored_by="claude")
+    store.protect_labels(conn)
+    store.set_score(conn, key, 4, "heuristic said so", scored_by="heuristic")
+    assert store.protect_labels(conn) == 0
+    r = row(conn, key)
+    assert (r["label_score"], r["label_reason"]) == (7, "claude said so")
+
+
+def test_a_heuristic_score_is_never_promoted_to_a_label(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 4, "matched java, aws", scored_by="heuristic")
+    assert store.protect_labels(conn) == 0
+    assert row(conn, key)["label_score"] is None
+    assert store.unprotected_scores(conn) == 0
+
+
+def test_a_score_from_before_the_column_existed_counts_as_a_label(conn):
+    """NULL scored_by is the claude era, which is every row in the current corpus."""
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "good fit")
+    assert store.unprotected_scores(conn) == 1
+    assert store.protect_labels(conn) == 1
+    assert row(conn, key)["label_score"] == 7
+
+
+def test_an_unscored_row_is_not_protected(conn):
+    seed(conn, "1")
+    assert store.protect_labels(conn) == 0
+    assert store.unprotected_scores(conn) == 0

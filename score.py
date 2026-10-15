@@ -19,8 +19,18 @@ at all.
     python3 score.py --dry-run     # print what the engine would do, call nothing
     python3 score.py               # score everything unscored
     python3 score.py --limit 5
-    python3 score.py --rescore     # re-score jobs that already have a score
     python3 score.py --engine claude
+
+Re-scoring is the one destructive thing in this project, and it is gated. `jobs.score` holds
+918 rows of claude's judgement that cannot be re-derived without spending the owner's
+subscription on the whole corpus again, and a rescore overwrites exactly those cells. So
+`--rescore` refuses to start unless the labels are safe twice over: the export from
+`calibration_labels.py` must exist and cover every row at risk, and either `--backup PATH`
+is given (a consistent SQLite backup, taken before the first write) or `--i-have-a-backup`
+is passed to say so out loud.
+
+    python3 calibration_labels.py --export              # once, before any of this
+    python3 score.py --rescore --backup ~/jobhunt-pre-rescore.db
 """
 
 from __future__ import annotations
@@ -28,11 +38,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
+import calibration_labels
 import engine
 import jobprofile
 import store
@@ -40,6 +52,7 @@ import store
 ROOT = Path(__file__).resolve().parent
 RESUME = ROOT / "config" / "resume.md"
 RESUME_EXAMPLE = ROOT / "config" / "resume.example.md"
+LABELS = calibration_labels.LABELS
 JD_CHARS = 2500          # per req, inside the prompt
 # Was 420s, chosen when batches ran one at a time. Batches now run concurrently, so a stuck
 # call no longer blocks the others and there is no reason to wait this long for one of them.
@@ -184,19 +197,169 @@ def load_master() -> str | None:
     return path.read_text(encoding="utf-8")
 
 
-def main() -> int:
+def loud(lines: list[str]) -> str:
+    """A refusal nobody can scroll past. Returned, so the caller decides how it exits."""
+    rule = "=" * 78
+    return "\n".join(["", rule, *lines, rule, ""])
+
+
+def backup_db(conn: sqlite3.Connection, dest: Path) -> None:
+    """
+    A consistent copy of the open database, taken before anything is overwritten.
+
+    `sqlite3.Connection.backup` rather than `shutil.copy` because the connection is open and
+    may hold uncommitted work: a file copy of a live SQLite database can land mid-transaction.
+    Refuses a destination inside the repo — `config/profile.yaml.bak` once reached a remote
+    carrying a name, email, phone and the whole situation block, which is why `.gitignore`
+    carries `config/*.bak` as a backstop. A database backup is strictly worse: it is the whole
+    job hunt. Refuses an existing file too, rather than overwriting someone's earlier backup.
+    """
+    if dest.resolve().is_relative_to(ROOT):
+        sys.exit(loud([
+            f"REFUSING to back up inside the repository: {dest}",
+            "",
+            "A copy of the database here is one `git add -A` away from a remote, and it holds",
+            "every company, score and note in the job hunt. config/*.bak is in .gitignore for",
+            "exactly this reason, after a profile backup reached a remote carrying personal",
+            "details. Pick a path outside the repo:",
+            "",
+            "    --backup ~/jobhunt-pre-rescore.db",
+        ]))
+    if dest.exists():
+        sys.exit(loud([
+            f"REFUSING to overwrite an existing backup: {dest}",
+            "",
+            "That file may be the only copy of an earlier state. Choose another path.",
+        ]))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(dest) as out:
+        conn.backup(out)
+    print(f"backed up to {dest} ({dest.stat().st_size} bytes)")
+
+
+def gate_rescore(conn, db_path: Path, labels_path: Path, backup: Path | None,
+                 confirmed: bool, overwriting: int) -> None:
+    """
+    Refuse to rescore unless the labels survive it. Exits on refusal; returns on approval.
+
+    Two conditions, and both are about the same single fact: the `score` column is the only
+    ground truth this project has.
+
+    1. The label export must exist and cover every row at risk. "At risk" is every row with a
+       score and no `label_score` behind it — those are the cells a rescore destroys with no
+       second copy anywhere. An export smaller than that number is a stale export, taken
+       before the corpus grew, and running on it would lose the difference silently.
+    2. There must be a backup: `--backup PATH`, which this takes itself and verifies, or
+       `--i-have-a-backup`, which puts the claim on the record. The flag is deliberately a
+       sentence rather than `--force`, because "force" invites being typed without reading.
+    """
+    at_risk = store.unprotected_scores(conn)
+    if not labels_path.exists():
+        sys.exit(loud([
+            "REFUSING to rescore: the Claude score labels have not been exported.",
+            "",
+            f"  database        : {db_path}",
+            f"  rows at risk    : {at_risk} (a score with no label_score behind it)",
+            f"  expected export : {labels_path}",
+            "",
+            "Those scores are the only ground truth this project has, and a rescore",
+            "overwrites exactly those cells. Export them first — it is read-only and takes",
+            "a second:",
+            "",
+            "    python3 calibration_labels.py --export",
+        ]))
+
+    try:
+        exported = len(calibration_labels.read_labels(labels_path)["rows"])
+    except (ValueError, json.JSONDecodeError) as e:
+        sys.exit(loud([
+            f"REFUSING to rescore: {labels_path} is not readable as a label export.",
+            f"  {e}",
+            "",
+            "Re-export it before overwriting anything:",
+            "",
+            "    python3 calibration_labels.py --export --force",
+        ]))
+
+    if exported < at_risk:
+        sys.exit(loud([
+            "REFUSING to rescore: the label export is smaller than the set it has to protect.",
+            "",
+            f"  rows at risk in {db_path.name:<12} : {at_risk}",
+            f"  rows in the export{'':<14} : {exported}",
+            f"  unprotected if this ran{'':<9} : {at_risk - exported}",
+            "",
+            "The export was almost certainly taken before the corpus grew. Re-export, then",
+            "run this again:",
+            "",
+            "    python3 calibration_labels.py --export --force",
+        ]))
+
+    print(f"labels: {exported} exported in {labels_path.name}, {at_risk} row(s) at risk")
+
+    if backup is not None:
+        backup_db(conn, backup)
+    elif not confirmed:
+        sys.exit(loud([
+            "REFUSING to rescore without a backup.",
+            "",
+            f"This run would overwrite {overwriting} score(s) in {db_path}, and {at_risk} "
+            f"row(s) there",
+            "have no label_score behind them.",
+            "",
+            "Either let this take one:",
+            "",
+            "    python3 score.py --rescore --backup ~/jobhunt-pre-rescore.db",
+            "",
+            "or say you already have one:",
+            "",
+            "    python3 score.py --rescore --i-have-a-backup",
+        ]))
+    else:
+        print("proceeding on --i-have-a-backup; no backup was taken by this run")
+
+
+def rescore_rows(conn, limit: int | None) -> list:
+    """
+    Every still-open row, worst-ranked last, or the first `limit` of them.
+
+    `--rescore` used to inherit `--limit`'s default of 100 and silently rescore the top 100 by
+    score, which is the worst possible subset: it leaves the database holding two scales at
+    once, the top of it on the new one and the rest on the old. No limit unless one is asked
+    for.
+    """
+    sql = "SELECT * FROM jobs WHERE still_open = 1 ORDER BY score DESC"
+    if limit is not None:
+        return conn.execute(sql + " LIMIT ?", (limit,)).fetchall()
+    return conn.execute(sql).fetchall()
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true",
                     help="print what the engine would do, call nothing")
-    ap.add_argument("--limit", type=int, default=100,
-                    help="how many reqs to score (default: %(default)s)")
-    ap.add_argument("--rescore", action="store_true")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="how many reqs to score (default: 100, or every still-open req "
+                         "with --rescore)")
+    ap.add_argument("--rescore", action="store_true",
+                    help="re-judge reqs that already have a score. Overwrites them, so it "
+                         "needs the label export and a backup; see --backup")
+    ap.add_argument("--backup", type=Path, default=None, metavar="PATH",
+                    help="with --rescore: take a consistent backup here first. Must be "
+                         "outside the repository")
+    ap.add_argument("--i-have-a-backup", action="store_true",
+                    help="with --rescore: proceed without taking a backup, because one "
+                         "already exists")
+    ap.add_argument("--labels", type=Path, default=LABELS, metavar="FILE",
+                    help="the label export --rescore checks for (default: %(default)s)")
+    ap.add_argument("--db", type=Path, default=None,
+                    help="score this database instead of jobhunt.db")
     ap.add_argument("--batch", type=int,
                     help="reqs per scoring call; defaults to runtime.max_score_batch (12). "
                          "Ignored by the heuristic engine, which groups by 50.")
     ap.add_argument("--engine", choices=engine.VALID,
                     help="override runtime.engine for this run")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     profile = jobprofile.load()
     rt = jobprofile.runtime(profile)
@@ -209,14 +372,21 @@ def main() -> int:
         return 1
     master = load_master()
 
-    with store.connect() as conn:
+    db_path = args.db or store.DB_PATH
+    with store.connect(db_path) as conn:
         if args.rescore:
-            rows = conn.execute(
-                "SELECT * FROM jobs WHERE still_open = 1 ORDER BY score DESC LIMIT ?",
-                (args.limit,),
-            ).fetchall()
+            rows = rescore_rows(conn, args.limit)
+            scored_now = sum(1 for r in rows if r["score"] is not None)
+            print(f"--rescore will OVERWRITE {scored_now} existing score(s) "
+                  f"of {len(rows)} still-open req(s) in {db_path}")
+            if not args.dry_run:
+                gate_rescore(conn, db_path, args.labels, args.backup,
+                             args.i_have_a_backup, scored_now)
+                protected = store.protect_labels(conn)
+                print(f"copied {protected} score(s) into label_score/label_reason "
+                      f"before overwriting anything")
         else:
-            rows = store.unscored(conn, args.limit)
+            rows = store.unscored(conn, args.limit if args.limit is not None else 100)
 
         if not rows:
             print("nothing to score")
@@ -258,7 +428,8 @@ def main() -> int:
             for r in results or []:
                 j = rows[r["n"] - 1]
                 store.set_score(conn, j["key"], r["score"], r["reason"],
-                                lane=r["lane"], speed_note=r["speed"])
+                                lane=r["lane"], speed_note=r["speed"],
+                                scored_by=engine_name)
                 total += 1
                 flag = "*" if r["score"] >= threshold else " "
                 print(f" {flag}{r['score']:>2}  {j['company']:<14} {j['title'][:40]:<40} "

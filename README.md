@@ -152,14 +152,43 @@ python3 fetch.py --seed --enrich          # poll boards, reload seed reqs, recov
 python3 fetch.py --company Adobe          # one board only
 python3 fetch.py --enrich-only            # just chase JD text for reqs missing it
 python3 score.py                          # score everything unscored
-python3 score.py --rescore --limit 20     # re-judge after editing the profile
 python3 draft.py --min-score 8            # drafts only for the strongest
 python3 digest.py --stdout                # print today's digest instead of writing it
 ```
 
+### Re-scoring, and why it is gated
+
 If you edit `profile.yaml` in a way that changes the bar — a new `exclude_titles` entry, a
-different `floor_lpa`, a rewritten `situation` — run `python3 score.py --rescore` so the
-existing pipeline is judged by the new rules.
+different `floor_lpa`, a rewritten `situation` — the existing pipeline is still judged by the
+old rules until you re-score it. `--rescore` does that, and it is the one destructive thing in
+this project: `jobs.score` holds the judgement already spent on those reqs, and a rescore
+overwrites exactly those cells. On a database scored by `claude`, that judgement cost a
+subscription call per req and cannot be re-derived.
+
+So two things must be true before it will start, and it refuses loudly if either is not:
+
+1. **The labels are exported.** `calibration/claude-labels.json` must exist and cover every row
+   whose score has no `label_score` behind it. Make it once, before any of this:
+   `python3 calibration_labels.py --export` (read-only, takes a second).
+2. **There is a backup.** Either `--backup PATH`, which takes a consistent one itself before
+   the first write and refuses a path inside the repository, or `--i-have-a-backup`, which puts
+   the claim on the record.
+
+```bash
+python3 calibration_labels.py --export
+python3 score.py --rescore --backup ~/jobhunt-pre-rescore.db
+```
+
+A permitted rescore copies `score`/`score_reason` into `label_score`/`label_reason` for every
+row holding judgement that cannot be re-derived, so the labels survive inside the database too,
+and records which engine wrote each new score in `scored_by`. A heuristic score never becomes a
+label: it is a pure function of the row, so a later rescore reproduces it, and treating it as
+ground truth would have `calibrate.py` measuring the heuristic against itself.
+
+`--rescore` covers **every still-open req** unless you pass `--limit`. It used to inherit
+`--limit`'s default of 100 and silently re-judge the top hundred by score, which is the worst
+possible subset: the top of the database ends up on one scale and the rest on another, and
+nothing says which row is which.
 
 ### Choosing an engine
 
@@ -223,7 +252,7 @@ value, so this table cannot drift out of date without the help text drifting too
 | `fetch.py --enrich` | `--enrich-max-attempts` | `runtime.enrich_max_attempts` (3) | failed attempts before a row is left alone |
 | `fetch.py --recheck-closed` | `--recheck-limit` | 60 | closed reqs re-probed |
 | `fetch.py --recheck-closed` | `--recheck-min-score` | 6 | score floor for re-probing (unscored always included) |
-| `score.py` | `--limit` | 100 | reqs scored |
+| `score.py` | `--limit` | 100, or every still-open req with `--rescore` | reqs scored |
 | `score.py` | `--batch` | `runtime.max_score_batch` (12) | reqs per scoring call (`claude` engine only) |
 | `draft.py` | `--limit` | 6 | drafts written |
 | `tailor.py` | `--limit` | 6 | resumes tailored |
