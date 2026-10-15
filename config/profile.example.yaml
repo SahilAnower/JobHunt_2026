@@ -36,7 +36,8 @@ resume_summary: |
   latency 40% by reworking the caching layer.
 
   Recent work: an internal agentic tool using an LLM to triage support tickets, which
-  removed roughly 15 hours of manual work a week.
+  removed roughly 15 hours of manual work a week. Built on Amazon Bedrock.
+  Multi-agent pipeline driven by prompt engineering and tool use.
 
   Gaps to be honest about: no production frontend work beyond small React changes, and no
   Kubernetes ownership.
@@ -388,10 +389,13 @@ scoring:
       aws: 0.8
       microservices: 0.7
       spring: 0.7
-      kafka: 0.7
+      # No kafka (was 0.7) and no rabbitmq (was 0.5): neither appears anywhere in
+      # config/resume.md, so crediting them awarded 1.2 of overlap weight that cannot be
+      # defended in a screen, and it skewed the pipeline toward employers who post Kafka
+      # roles in volume. Add a term here only once the resume claims it — the evidence
+      # check below will refuse it otherwise.
       dynamodb: 0.6
       cdk: 0.6
-      rabbitmq: 0.5
       observability: 0.5
       infrastructure as code: 0.5
       multi-region: 0.5
@@ -408,10 +412,17 @@ scoring:
       docker: 0.2
       kubernetes: 0.2
     lane_b:
+      # Expanded to match the resume's GenAI & Agentic AI section: LLM application
+      # development, multi-agent orchestration, agentic workflows with subagents/skills/tool
+      # use, prompt engineering and Amazon Bedrock. `bedrock` moved up from `boilerplate`,
+      # where it sat because it was unevidenced when that tier was built.
       agentic: 0.9
       multi-agent: 0.9
       llm: 0.8
       genai: 0.6
+      prompt engineering: 0.5
+      bedrock: 0.5
+      tool use: 0.4
       agent: 0.3
     secondary:
       python: 0.3
@@ -434,7 +445,7 @@ scoring:
       ci/cd: 0.1
       rag: 0.1
       langchain: 0.1
-      bedrock: 0.1
+      # bedrock promoted to lane_b; a term must belong to exactly one tier
       typescript: 0.1
       scalable: 0.1
       restful: 0.1
@@ -470,10 +481,26 @@ scoring:
       - multi-agent
       - multi agent
       - multiagent
+      - multi-agent orchestration
+      - agent orchestration
+      - agentic orchestration
       genai:
       - genai
       - gen ai
       - generative ai
+      prompt engineering:
+      - prompt engineering
+      - prompt design
+      - prompting
+      tool use:
+      - tool use
+      - tool calling
+      - tool-calling
+      - function calling
+      bedrock:
+      - bedrock
+      - amazon bedrock
+      - aws bedrock
       llm:
       - llm
       - llms

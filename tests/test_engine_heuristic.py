@@ -60,13 +60,17 @@ Hyderabad, India · Nov 2025 – Present
 
 PROFILE = {
     "candidate": {"short_name": "X"},
-    "resume_summary": "Java, Spring Boot, AWS, Kafka, RabbitMQ, Redis, distributed systems, "
+    # Evidence for every scored term, so `ctx.warnings` is empty and the evidence guard is
+    # exercised rather than tripped. Kafka and RabbitMQ are absent because they were dropped
+    # from the vocabulary: the owner's resume does not claim them.
+    "resume_summary": "Java, Spring Boot, AWS, Redis, distributed systems, "
                       "microservices, DynamoDB, MySQL, PostgreSQL, MongoDB, Docker, "
                       "Kubernetes, Jenkins, GraphQL, data structures, algorithms, "
                       "object-oriented design, design patterns, system design, REST APIs, "
                       "agentic multi-agent LLM GenAI agent, python, javascript, c++, "
                       "node.js, react, observability, infrastructure as code, multi-region, "
-                      "lambda, cdk, cloudwatch, spring",
+                      "lambda, cdk, cloudwatch, spring, Amazon Bedrock, prompt engineering, "
+                      "tool use",
     "filters": {"include_titles": ["software engineer", "member of technical staff", "smts"],
                 "exclude_titles": ["senior", "sr", "staff", "principal", "lead", "architect"],
                 "exclude_overrides": ["member of technical staff"],
@@ -174,8 +178,10 @@ def test_boilerplate_tier_is_capped_well_below_saturation(ctx):
     the maximum +3.00 with nothing behind it. They now live in a tier whose entire summed
     contribution is capped.
     """
+    # Bedrock is deliberately absent: it was promoted out of this tier into lane_b once the
+    # resume claimed it, so including it here would no longer be a boilerplate-only JD.
     jd = ("Build scalable, low latency, high throughput RESTful services on S3, SQS, SNS, ECS, "
-          "CloudFormation with CI/CD, TypeScript, RAG, LangChain and Bedrock.")
+          "CloudFormation with CI/CD, TypeScript, RAG and LangChain.")
     v = eh.score_one(row(description=jd), ctx)
     cap = eh.DEFAULTS["weights"]["boilerplate_cap"]
     sat = eh.DEFAULTS["weights"]["overlap_saturate"]

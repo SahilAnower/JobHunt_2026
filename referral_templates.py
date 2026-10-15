@@ -272,7 +272,9 @@ WORD_BUDGET = {"referral": 90, "email": 130}
 # the canonical lowercase spelling, because that is an audit string rather than prose.
 DISPLAY = {
     "java": "Java", "spring boot": "Spring Boot", "spring": "Spring", "aws": "AWS",
-    "kafka": "Kafka", "dynamodb": "DynamoDB", "cdk": "AWS CDK", "rabbitmq": "RabbitMQ",
+    # No kafka/rabbitmq display names: both were dropped from the scoring vocabulary because
+    # the resume does not claim them, and a display name for a term that cannot match is dead.
+    "dynamodb": "DynamoDB", "cdk": "AWS CDK",
     "lambda": "AWS Lambda", "redis": "Redis", "cloudwatch": "CloudWatch",
     "rest api": "REST APIs", "object-oriented": "object-oriented design",
     "postgresql": "PostgreSQL", "mysql": "MySQL", "mongodb": "MongoDB", "docker": "Docker",

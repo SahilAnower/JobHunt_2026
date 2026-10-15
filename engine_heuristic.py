@@ -108,10 +108,13 @@ DEFAULTS: dict = {
             "aws": 0.8,
             "microservices": 0.7,
             "spring": 0.7,
-            "kafka": 0.7,
+            # kafka (0.7) and rabbitmq (0.5) were removed deliberately. Neither appears
+            # anywhere in config/resume.md, so crediting them awarded 1.2 of overlap weight
+            # the owner cannot defend in a screen. It also skewed the pipeline: JP Morgan
+            # Chase posts Kafka roles constantly and reached 39 of 132 applications with no
+            # conversations. Add them back only if the resume claims them first.
             "dynamodb": 0.6,
             "cdk": 0.6,
-            "rabbitmq": 0.5,
             "observability": 0.5,
             "infrastructure as code": 0.5,
             "multi-region": 0.5,
@@ -129,10 +132,25 @@ DEFAULTS: dict = {
             "kubernetes": 0.2,
         },
         "lane_b": {
+            # Expanded to match the GenAI & Agentic AI section of the resume, which lists LLM
+            # application development, multi-agent orchestration, agentic workflows with
+            # subagents/skills/tool use, prompt engineering and Amazon Bedrock. This is the
+            # owner's clearest differentiator and five terms under-represented it. "bedrock"
+            # moved up from the boilerplate tier: it was unevidenced when that tier was built
+            # and the resume now claims it.
             "agentic": 0.9,
             "multi-agent": 0.9,
             "llm": 0.8,
             "genai": 0.6,
+            # No "agent orchestration" entry: the resume says "Multi-Agent Systems &
+            # Orchestration", so the phrase itself is not claimed and the evidence check
+            # rightly refuses it. "multi-agent" above already carries the concept at 0.9, and
+            # a JD asking for agent orchestration almost always says agentic or multi-agent
+            # too. Adding the phrase to the resume purely to satisfy the scorer would be
+            # gaming the measurement rather than improving it.
+            "prompt engineering": 0.5,
+            "bedrock": 0.5,
+            "tool use": 0.4,
             "agent": 0.3,
         },
         "secondary": {
@@ -161,7 +179,9 @@ DEFAULTS: dict = {
         "boilerplate": {
             "sqs": 0.1, "s3": 0.1, "ecs": 0.1, "cloudformation": 0.1, "sns": 0.1,
             "high throughput": 0.1, "low latency": 0.1, "ci/cd": 0.1, "rag": 0.1,
-            "langchain": 0.1, "bedrock": 0.1, "typescript": 0.1, "scalable": 0.1,
+            # "bedrock" was promoted to lane_b once the resume claimed Amazon Bedrock. Do not
+            # re-add it here: a term listed in two tiers is counted twice.
+            "langchain": 0.1, "typescript": 0.1, "scalable": 0.1,
             "restful": 0.1,
         },
         "aliases": {
@@ -175,9 +195,14 @@ DEFAULTS: dict = {
             "ci/cd": ["ci/cd", "cicd", "ci cd"],
             "rest api": ["rest api", "rest apis", "restful api"],
             "postgresql": ["postgresql", "postgres"],
-            "multi-agent": ["multi-agent", "multi agent", "multiagent"],
             "genai": ["genai", "gen ai", "generative ai"],
             "llm": ["llm", "llms", "large language model"],
+            "multi-agent": ["multi-agent", "multi agent", "multiagent",
+                            "multi-agent orchestration", "agent orchestration",
+                            "agentic orchestration"],
+            "prompt engineering": ["prompt engineering", "prompt design", "prompting"],
+            "tool use": ["tool use", "tool calling", "tool-calling", "function calling"],
+            "bedrock": ["bedrock", "amazon bedrock", "aws bedrock"],
         },
     },
 
