@@ -33,6 +33,7 @@ would be worse than useless.
     python3 calibrate.py --db /tmp/copy.db --label-column label_score
     python3 calibrate.py --db /tmp/copy.db --before-high2      # the pre-fix weights
     python3 calibrate.py --db /tmp/copy.db --threshold 6
+    python3 calibrate.py --db /tmp/copy.db --labels --sweep    # tune the weights
 """
 
 from __future__ import annotations
@@ -157,6 +158,260 @@ def compare_labels(file_labels: dict[str, int], col_labels: dict[str, int],
     print()
 
 
+# --------------------------------------------------------------------------- measurement
+
+def measure(rows, ctx, labels: dict[str, int], threshold: int) -> dict:
+    """
+    Score every row once and reduce it to the numbers that decide anything. Pure.
+
+    Separated out because the sweep calls it a few hundred times and the report calls it once,
+    and the two must agree by construction. A second scoring loop written for the sweep would
+    be free to drift from the one the report prints, and then the sweep would be optimising a
+    quantity nobody ever sees.
+    """
+    claude: list[int] = []
+    heur: list[int] = []
+    verdicts = []
+    with_jd: list[tuple[int, int]] = []
+    hist_h, hist_c = collections.Counter(), collections.Counter()
+    free_points: list[float] = []
+
+    for r in rows:
+        v = eh.score_one(r, ctx)
+        label = labels[r["key"]]
+        claude.append(label)
+        heur.append(v.score)
+        verdicts.append((r, v))
+        hist_h[v.score] += 1
+        hist_c[label] += 1
+        if (r["description"] or "").strip():
+            with_jd.append((label, v.score))
+            low = eh.pad(r["description"])
+            hits = eh.matched_skills(ctx, low)
+            if hits and not any(t in eh.EVIDENCED_TIERS for _, _, t in hits):
+                free_points.append(v.parts.get("overlap", 0.0))
+
+    c = confusion(claude, heur, threshold)
+    return {
+        "claude": claude, "heur": heur, "verdicts": verdicts, "with_jd": with_jd,
+        "hist_h": hist_h, "hist_c": hist_c, "free_points": free_points,
+        "rho": spearman([float(x) for x in claude], [float(x) for x in heur]),
+        "rho_jd": (spearman([float(c_) for c_, _ in with_jd], [float(h) for _, h in with_jd])
+                   if len(with_jd) > 1 else float("nan")),
+        "precision": c["precision"], "recall": c["recall"],
+        "promote": c["heur_at"], "kept": c["tp"], "missed": c["fn"], "extra": c["fp"],
+    }
+
+
+# --------------------------------------------------------------------------- the sweep
+
+# The weights the sweep is allowed to move, in a fixed order so two runs over the same corpus
+# produce the same answer. `where` says which part of the config the key lives in: `base` and
+# `base_no_jd` are top-level under `scoring:`, the rest sit under `scoring.weights`. `step` is
+# the spacing of the seven candidates centred on the shipped value.
+#
+# This list is deliberately short and named rather than "every weight". Sweeping all forty
+# weights against 918 rows would fit the corpus rather than the problem, and nothing here has
+# a holdout set to catch that. These ten are the dimensions items 3 and 4 just changed plus the
+# three that set the overall level, which is where a real improvement could still be hiding.
+SWEEP_SPEC: tuple[tuple[str, str, float], ...] = (
+    ("overlap_max",           "weights", 0.5),
+    ("overlap_saturate",      "weights", 0.5),
+    ("overlap_preamble_mult", "weights", 0.15),
+    ("off_lane_max",          "weights", 0.5),
+    ("dominant_stack_max",    "weights", 0.5),
+    ("dominant_stack_ratio",  "weights", 0.25),
+    ("yoe_per_year_over",     "weights", 0.15),
+    ("base",                  "top",     0.25),
+    ("base_no_jd",            "top",     0.25),
+    ("no_jd_title_in_band",   "weights", 0.3),
+)
+SWEEP_PASSES = 3
+SWEEP_BUDGET = 300
+
+
+def sweep_candidates(cur: float, step: float, n: int = 3) -> list[float]:
+    """Seven values centred on `cur`, nearest first so the budget is spent close to home."""
+    vals = [round(cur + i * step, 4) for i in range(-n, n + 1)]
+    return sorted(vals, key=lambda v: (abs(v - cur), v))
+
+
+def sweep_objective(m: dict) -> tuple[float, float]:
+    """
+    What the sweep maximises: precision at the cut, tie-broken on the with-JD Spearman.
+
+    Precision first because the cut gates the digest, drafting and tailoring, so every false
+    positive at 7+ is a draft written against a req that was never worth one. Recall is not in
+    here — it is a *constraint*, enforced by `sweep_admissible`, because trading recall for
+    precision is how a sweep "wins" by promoting four reqs and getting three of them right.
+    """
+    rho = m["rho_jd"]
+    return (m["precision"], rho if rho == rho else 0.0)   # NaN sorts as zero, not as a crash
+
+
+def sweep_admissible(m: dict, baseline_recall: float) -> bool:
+    """Recall at the cut must not fall below the baseline measured in the same run."""
+    return m["recall"] >= baseline_recall - 1e-9
+
+
+def with_overrides(profile: dict, values: dict[str, float]) -> dict:
+    """A copy of the profile carrying these sweep values. Never mutates the input."""
+    where = {name: w for name, w, _ in SWEEP_SPEC}
+    prof = copy.deepcopy(profile)
+    sc = prof.setdefault("scoring", {})
+    w = sc.setdefault("weights", {})
+    for name, value in values.items():
+        if where[name] == "weights":
+            w[name] = value
+        else:
+            sc[name] = value
+    return prof
+
+
+def sweep_context(profile: dict, master: str | None, values: dict[str, float]):
+    """
+    A context for these values, or None if any validator refuses them.
+
+    Going through `build_context` rather than calling `_check_weights` directly is the point:
+    it is the same gate the real scorer passes through, so a candidate the sweep accepts is a
+    candidate the owner can actually paste into their profile. A positive `off_lane_max` is
+    rejected here rather than being scored and then recommended.
+    """
+    try:
+        return eh.build_context(with_overrides(profile, values), master)
+    except eh.ConfigError:
+        return None
+
+
+def run_sweep(rows, profile: dict, master: str | None, labels: dict[str, int],
+              threshold: int, budget: int = SWEEP_BUDGET,
+              passes: int = SWEEP_PASSES, log=print) -> dict:
+    """
+    Coordinate ascent over SWEEP_SPEC. Returns {"baseline", "best", "values", "evals", ...}.
+
+    Coordinate ascent rather than a grid because a grid of the same size cannot reach: seven
+    values on ten weights is 282 million points, so a 300-evaluation grid would be two values
+    per weight. Ascent spends the same budget walking one weight at a time from the shipped
+    configuration, which is both a better use of it and interpretable — every step is "this
+    weight moved, and this is what it bought".
+
+    It is a local search and makes no claim to a global optimum. The honest reading of a result
+    here is "this is the best the shipped weights can be nudged into on this corpus", which is
+    exactly the question being asked.
+    """
+    base_values = {}
+    merged = eh._merge(eh.DEFAULTS, profile.get("scoring") or {})
+    for name, where, _ in SWEEP_SPEC:
+        src = merged["weights"] if where == "weights" else merged
+        base_values[name] = float(src[name])
+
+    cache: dict[tuple, dict] = {}
+    evals = 0
+
+    def evaluate(values: dict[str, float]) -> dict | None:
+        nonlocal evals
+        key = tuple(sorted(values.items()))
+        if key in cache:
+            return cache[key]
+        if evals >= budget:
+            return None
+        ctx = sweep_context(profile, master, values)
+        if ctx is None:
+            cache[key] = None
+            return None
+        evals += 1
+        m = measure(rows, ctx, labels, threshold)
+        cache[key] = m
+        return m
+
+    baseline = evaluate(dict(base_values))
+    if baseline is None:
+        raise RuntimeError("the shipped weights do not pass their own validators")
+    baseline_recall = baseline["recall"]
+    log(f"baseline: precision {baseline['precision']:.4f}  recall {baseline['recall']:.4f}  "
+        f"rho(JD) {baseline['rho_jd']:+.4f}  promotes {baseline['promote']}")
+    log(f"objective: maximise precision at {threshold}+ subject to recall >= "
+        f"{baseline_recall:.4f}, tie-broken on rho(JD)")
+    log("")
+
+    best_values = dict(base_values)
+    best = baseline
+    rejected = 0
+
+    for p in range(1, passes + 1):
+        moved = []
+        for name, _, step in SWEEP_SPEC:
+            cur = best_values[name]
+            for value in sweep_candidates(cur, step):
+                if value == cur:
+                    continue
+                trial = dict(best_values)
+                trial[name] = value
+                m = evaluate(trial)
+                if m is None:
+                    rejected += 1
+                    continue
+                if sweep_admissible(m, baseline_recall) and \
+                        sweep_objective(m) > sweep_objective(best):
+                    best, best_values = m, trial
+            if best_values[name] != cur:
+                moved.append(f"{name} {cur:g} -> {best_values[name]:g}")
+        log(f"pass {p}: {evals} evaluations used; " +
+            (", ".join(moved) if moved else "no weight moved"))
+        if not moved:
+            log("        nothing improved on this pass, so later passes cannot either")
+            break
+
+    return {"baseline": baseline, "best": best, "values": best_values,
+            "base_values": base_values, "evals": evals, "rejected": rejected,
+            "baseline_recall": baseline_recall, "threshold": threshold}
+
+
+def print_sweep(res: dict) -> None:
+    base, best = res["baseline"], res["best"]
+    t = res["threshold"]
+    won = (sweep_admissible(best, res["baseline_recall"])
+           and sweep_objective(best) > sweep_objective(base))
+
+    print()
+    print(f"=== weight sweep, {res['evals']} evaluations "
+          f"({res['rejected']} candidate(s) refused by the validators) ===")
+    print()
+    print(f"                     precision@{t}+   recall@{t}+   rho(all)   rho(JD)   promotes")
+    for label, m in (("baseline", base), ("best    ", best)):
+        print(f"  {label}            {m['precision']:>8.3f}    {m['recall']:>8.3f}   "
+              f"{m['rho']:>+7.3f}   {m['rho_jd']:>+7.3f}   {m['promote']:>8}")
+    print()
+
+    if not won:
+        print("The sweep did NOT beat the shipped weights on precision at equal-or-better")
+        print("recall. Keep the current weights. This is a result, not a failure: it says the")
+        print("shipped values are at a local optimum for this corpus, and shipping a weight")
+        print("change the measurement did not justify would be worse than shipping nothing.")
+        return
+
+    print("changed weights")
+    print("  weight                    before     after")
+    for name, _, _ in SWEEP_SPEC:
+        b, a = res["base_values"][name], res["values"][name]
+        if b != a:
+            print(f"  {name:<24} {b:>8g}  {a:>8g}")
+    print()
+    print("ready to paste under `scoring:` in config/profile.yaml (NOT written by this tool):")
+    where = {name: w for name, w, _ in SWEEP_SPEC}
+    top = [(n, res["values"][n]) for n, _, _ in SWEEP_SPEC
+           if where[n] == "top" and res["values"][n] != res["base_values"][n]]
+    wts = [(n, res["values"][n]) for n, _, _ in SWEEP_SPEC
+           if where[n] == "weights" and res["values"][n] != res["base_values"][n]]
+    print("    scoring:")
+    for n, v in top:
+        print(f"      {n}: {v:g}")
+    if wts:
+        print("      weights:")
+        for n, v in wts:
+            print(f"        {n}: {v:g}")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", type=Path, required=True,
@@ -172,6 +427,13 @@ def main(argv: list[str] | None = None) -> int:
                          f"Bare --labels means {LABELS}")
     ap.add_argument("--label-column", default=None, metavar="COL",
                     help="measure against this column on jobs (default: score)")
+    ap.add_argument("--sweep", action="store_true",
+                    help="coordinate-ascent the weights in SWEEP_SPEC against the labels. "
+                         "Reports and never writes a config file.")
+    ap.add_argument("--sweep-budget", type=int, default=SWEEP_BUDGET, metavar="N",
+                    help="hard cap on scoring passes in the sweep (default: %(default)s)")
+    ap.add_argument("--sweep-passes", type=int, default=SWEEP_PASSES, metavar="N",
+                    help="coordinate-ascent passes (default: %(default)s)")
     args = ap.parse_args(argv)
 
     if args.db.resolve() == LIVE_DB.resolve():
@@ -222,23 +484,10 @@ def main(argv: list[str] | None = None) -> int:
     if not rows:
         sys.exit(f"no row in {args.db} carries a label from {source}")
 
-    claude, heur, verdicts = [], [], []
-    with_jd = []
-    hist_h, hist_c = collections.Counter(), collections.Counter()
-    free_points = []
-    for r in rows:
-        v = eh.score_one(r, ctx)
-        claude.append(labels[r["key"]])
-        heur.append(v.score)
-        verdicts.append((r, v))
-        hist_h[v.score] += 1
-        hist_c[labels[r["key"]]] += 1
-        if (r["description"] or "").strip():
-            with_jd.append((labels[r["key"]], v.score))
-            low = eh.pad(r["description"])
-            hits = eh.matched_skills(ctx, low)
-            if hits and not any(t in eh.EVIDENCED_TIERS for _, _, t in hits):
-                free_points.append(v.parts.get("overlap", 0.0))
+    m = measure(rows, ctx, labels, args.threshold)
+    claude, heur, verdicts = m["claude"], m["heur"], m["verdicts"]
+    with_jd, free_points = m["with_jd"], m["free_points"]
+    hist_h, hist_c = m["hist_h"], m["hist_c"]
 
     label = "BEFORE the HIGH-2 fix" if args.before_high2 else "as shipped"
     print(f"=== heuristic vs stored Claude labels, {label} ===")
@@ -299,6 +548,13 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("dimensions, rows fired on: " + ", ".join(
         f"{k} {n}" for k, n in sorted(parts_fired.items(), key=lambda x: -x[1])))
+
+    if args.sweep:
+        print()
+        print("=" * 78)
+        res = run_sweep(rows, profile, master, labels, args.threshold,
+                        budget=args.sweep_budget, passes=args.sweep_passes)
+        print_sweep(res)
     return 0
 
 

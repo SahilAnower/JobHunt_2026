@@ -114,6 +114,89 @@ the bar would not reduce the number of drafts; it would only change which six.
 If the digest feels long, raise `digest_below_bar` or lower `--limit`, not the threshold. That
 is the same advice the profile comment already gives for a different reason.
 
+## The weight sweep, and why the shipped weights did not change
+
+`calibrate.py --sweep` runs coordinate ascent over ten named weights — the dimensions the
+requirements-zone and dominant-stack work just added, plus the three that set the overall level
+— seven candidate values each, three passes, hard-capped at 300 scoring passes. The objective is
+**precision at the 7+ cut subject to recall not falling below the baseline measured in the same
+run**, tie-broken on the with-JD Spearman. Recall is a constraint rather than a term because a
+sweep allowed to trade it away "wins" by promoting almost nothing.
+
+```bash
+cp jobhunt.db /tmp/cal-5.db
+python3 calibrate.py --db /tmp/cal-5.db --labels calibration/claude-labels.json --sweep
+```
+
+On all 918 rows it reports a win, 177 evaluations, 4 candidates refused by the validators:
+
+| | precision@7+ | recall@7+ | rho (all) | rho (JD) | promotes |
+|---|---|---|---|---|---|
+| shipped | 0.402 | 0.721 | +0.542 | +0.622 | 276 |
+| sweep best | **0.430** | 0.721 | +0.551 | +0.623 | 258 |
+
+| weight | before | sweep |
+|---|---|---|
+| `overlap_preamble_mult` | 0.6 | 0.3 |
+| `off_lane_max` | -2 | -6 |
+| `dominant_stack_max` | -2 | -3.5 |
+| `dominant_stack_ratio` | 1.5 | 0.5 |
+| `yoe_per_year_over` | -0.55 | -0.4 |
+
+**Those values are not shipped.** The sweep scores every candidate on all 918 labelled rows and
+then reports the best of them, so its +0.028 is an in-sample number: there is no holdout, and
+a flat objective surface plus 300 evaluations is exactly the setup in which a local search
+reports the noise it fitted. So the win was tested the only way it can be — split the corpus in
+half on the sorted key (alternating, so both halves carry the same mix of sources and bands),
+sweep on one half, measure the winning values on the other.
+
+| trained on | tested on | precision@7+ | recall@7+ | rho (JD) |
+|---|---|---|---|---|
+| — (shipped) | B | 0.436 | 0.747 | +0.658 |
+| A | B | 0.449 | **0.701** | +0.614 |
+| — (shipped) | A | 0.362 | 0.687 | +0.577 |
+| B | A | 0.380 | 0.687 | +0.602 |
+
+One transfer holds and one does not. The B-trained weights improve A (+0.018 precision, recall
+held, rho up). The A-trained weights **fail the sweep's own recall constraint** on B: recall
+falls 0.747 to 0.701, and the with-JD rho falls with it, so measured on rows it had not seen
+that configuration is not admissible at all.
+
+The weight values themselves say the same thing more plainly. Trained on two halves of one
+corpus, the sweep picks:
+
+| weight | shipped | A-trained | B-trained | all-918 |
+|---|---|---|---|---|
+| `overlap_preamble_mult` | 0.6 | 0 | 0.3 | 0.3 |
+| `off_lane_max` | -2 | -6 | -3 | -6 |
+| `dominant_stack_max` | -2 | -6.5 | -3.5 | -3.5 |
+| `dominant_stack_ratio` | 1.5 | 1 | 0.5 | 0.5 |
+| `yoe_per_year_over` | -0.55 | **-1.15** | **-0.4** | **-0.4** |
+
+Four of the five move in a consistent direction on both halves — discount the preamble harder,
+penalise off-lane work and a foreign dominant stack harder, let the dominant-stack rule fire
+more readily. That much is probably real. But the *magnitudes* are not identified: `off_lane_max`
+lands anywhere between -3 and -6, a factor of two, and `yoe_per_year_over` moves in **opposite
+directions** on the two halves (-1.15 against -0.4, around a shipped -0.55). A weight whose
+optimum flips direction between random halves of the corpus is not something 918 rows can
+measure.
+
+**Decision: keep the shipped weights.** The in-sample gain is +0.028 precision for 18 fewer
+promoted reqs, and the evidence that it survives contact with new reqs is one transfer out of
+two. `off_lane_max: -6` is a tripled penalty — one off-lane title term would move a req three
+score bands — on an estimate that halves when it is re-measured on different rows. Shipping it
+would be shipping the corpus, not the judgement.
+
+What would settle it, and is a separate piece of work rather than a weight tweak: label a fresh
+holdout (reqs scored after the export) with `engine: claude`, sweep on the existing 918, and
+measure once on the new rows. Until then the honest reading is that the shipped weights are at a
+local optimum this corpus cannot distinguish from its neighbours, and the sweep is in the repo so
+the question can be re-asked cheaply when the corpus grows.
+
+The harness is also usable as a one-off: `--sweep-budget` and `--sweep-passes` bound the run,
+and it never writes a config file — it prints a YAML fragment to paste by hand, deliberately,
+so that applying a sweep result is always a decision somebody made.
+
 ## The two round-3 review findings
 
 ### HIGH-2: fourteen skill terms with no resume evidence
