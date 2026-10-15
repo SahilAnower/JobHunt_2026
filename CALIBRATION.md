@@ -42,10 +42,17 @@ overwrite it without `--force`.
 That the guard rejected 0 rows is the proof that all 918 scores are Claude's: for every row,
 the shipped heuristic produces a different reason string than the one stored.
 
-On the 918-row corpus the shipped scorer measures Spearman **+0.505** all rows and **+0.585**
-on the with-JD slice, promoting **287** rows at 7+ against Claude's 154 (precision 0.39,
-recall 0.73). The file and the column agree to the digit, which is the check that the two
-measurement paths are the same measurement:
+On the 918-row corpus the shipped scorer measures Spearman **+0.542** all rows and **+0.622**
+on the with-JD slice, promoting **276** rows at 7+ against Claude's 154 (precision 0.40,
+recall 0.72) — the same figures the sweep table below reports on its `shipped` row, which is
+how the two sections are kept honest against each other. These replace the **+0.505** / **+0.585**
+and 287 promotes measured when this section was first written: that was before the
+requirements-zone weighting and the dominant-stack penalty landed, and both changed the scorer.
+Re-measure after any change to a scoring dimension, because this paragraph claims what the code
+does *now*, not what it did when the labels were exported.
+
+The file and the column agree to the digit, which is the check that the two measurement paths
+are the same measurement:
 
 ```bash
 python3 calibrate.py --db /tmp/cal-0.db                                  # jobs.score
@@ -234,15 +241,22 @@ Last run, on all five stages against a copy:
 
 | stage | result | work actually done |
 |---|---|---|
-| fetch | ok, 354s | polled the boards, seeded, enriched |
-| score | ok | **38 reqs scored** through the heuristic engine, in 1 batch |
-| draft | ok | **6 drafts written**, 4 reqs held back by the per-company cap |
+| fetch | ok, 459s | polled the boards, seeded, **recovered JD text for 85/120** enrich candidates |
+| score | ok | **37 reqs scored** through the heuristic engine, in 1 batch |
+| draft | ok | **6 drafts written**, 3 reqs held back by the per-company cap |
 | tailor | ok | **6 resumes tailored** |
 | digest | ok | wrote `digest/2026-10-15.md` |
 
 `calls.log` was not created. The work matters as much as the exit codes: a score stage with
-nothing to score never reaches an engine at all, so a 0-row pass would prove nothing. 38 reqs
+nothing to score never reaches an engine at all, so a 0-row pass would prove nothing. 37 reqs
 went through `score_one` and 12 generated files were written without `claude` being invoked once.
+
+The same pass is also the migration check. A copy of the live database arrives with none of the
+columns this work added, so the run exercises `store._migrate` against real data: `label_score`,
+`label_reason`, `enrich_attempts`, `enrich_last`, `enrich_note` and `scored_by` were all added
+in place, 918 existing scores survived untouched, and the 37 new rows carry
+`scored_by='heuristic'` — the column that makes a heuristic score distinguishable from a Claude
+label from then on.
 
 `run.py --db PATH` passes the path to every stage, which is what makes a full-pipeline check
 possible without touching the live database.
@@ -304,6 +318,27 @@ naming `go` is written, and the same row's resume body contains no never-claim t
 
 Across all 806 rows: base 806, source 806, overlap 545, yoe 437, title_band 351, target 261,
 never_claim 210, geo 158, cs_degree 100, off_lane 58, services 5, ceiling 4.
+
+On the current 918-row corpus, which includes the `dominant_stack` dimension the 806-row
+snapshot above predates: base 918, source 918, overlap 604, yoe 481, title_band 390, target 277,
+never_claim 228, geo 173, cs_degree 104, off_lane 63, **dominant_stack 61**, services 5,
+ceiling 4.
+
+`dominant_stack` was designed expecting it to fire on materially more rows than `off_lane`'s 63,
+on the reasoning that a thin title vocabulary misses foreign-stack reqs that the JD body would
+catch. It fires on **61** — about the same, not more. But the two are largely different rows:
+
+| | rows |
+|---|---|
+| `off_lane` only | 36 |
+| `dominant_stack` only | **34** |
+| both | 27 |
+| either | 97 |
+
+So the premise that JD-body evidence is much *broader* than title evidence did not hold, while
+the premise that it is *different* did: the dimension catches 34 reqs the title check misses
+entirely, and the 27-row overlap is where a React-titled req also has a React-dominant JD, which
+is the intended stacking. Worth keeping, and not the large win it was scoped as.
 
 `services` (5) and `ceiling` (4) barely fire. Both are kept deliberately: `exclusions.companies`
 already drops the named agencies so `services` only catches unnamed ones, and the fetch gate
