@@ -32,3 +32,4 @@ __pycache__/
 # Scratch worktrees, e.g. the one the quality pass ran in. Created with
 # `git worktree add .worktrees/<name>` and removed with `git worktree remove`.
 .worktrees/
+.venv/
