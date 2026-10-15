@@ -127,6 +127,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     have = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)")}
     if "misses" not in have:
         conn.execute("ALTER TABLE jobs ADD COLUMN misses INTEGER NOT NULL DEFAULT 0")
+    # A second home for the Claude labels, inside the database they were produced in.
+    # calibration/claude-labels.json is the primary copy and the one `calibrate.py` measures
+    # against; these columns exist so that a DB which has been re-scored still carries what it
+    # used to say, and so `calibrate.py --label-column label_score` can measure a rescored
+    # file against its own history. Written only by `calibration_labels.py --apply` and by
+    # `score.py --rescore` just before it overwrites a score. Never by a fetch.
+    if "label_score" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN label_score INTEGER")
+    if "label_reason" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN label_reason TEXT")
 
 
 def job_key(company: str, title: str, url: str = "", req_id: str = "") -> str:

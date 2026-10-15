@@ -1,9 +1,10 @@
 # Calibration — the heuristic engine against Claude's labels
 
-The `jobs.score` column holds 806 reqs that `engine: claude` already judged. That is the only
-ground truth this project has, and it is destructible: `score.py --rescore` overwrites it. So
-every number below was measured against a **copy**, and `calibrate.py` refuses to open the live
-`jobhunt.db` at all.
+The `jobs.score` column holds reqs that `engine: claude` already judged — 806 of them when the
+tables below were measured, 918 today. That is the only ground truth this project has, and it
+is destructible: `score.py --rescore` overwrites it. So every number below was measured against
+a **copy**, and `calibrate.py` refuses to open the live `jobhunt.db` at all. The labels are now
+also exported to `calibration/claude-labels.json`; see **The label snapshot** below.
 
 Re-derive any of it:
 
@@ -11,6 +12,44 @@ Re-derive any of it:
 cp jobhunt.db /tmp/cal.db
 python3 calibrate.py --db /tmp/cal.db
 python3 calibrate.py --db /tmp/cal.db --before-high2     # the pre-fix skill weights
+```
+
+## The label snapshot
+
+Every table below this section was measured when the corpus held **806** scored rows. It has
+since grown to **918**, and the labels now live in a file as well as in the column:
+
+```bash
+python3 calibration_labels.py --export          # writes calibration/claude-labels.json
+python3 calibrate.py --db /tmp/cal.db --labels  # measure against that file
+```
+
+| | |
+|---|---|
+| labels exported | **918** |
+| had a JD at export (700+ chars) | 616 |
+| blind at export | 302 |
+| provenance guard rejected | 0 — every stored reason differs from the heuristic's own output |
+| labels digest | `0ae6c682c99fbc7545e864a303e9b017021026f81e5b7cc20e2c3fc9febd0342` |
+| file sha256 | `704daa6d69e6c86c4f43792ab5a77c8cd0a323e3de71f5937bb53f0b4c73c2a9` |
+
+The labels digest hashes the labels only, so a re-export of an unchanged corpus reproduces it;
+the file sha256 covers the `exported_at` stamp too and will not match a second export. The file
+is gitignored — every row quotes a `score_reason` naming the owner and their situation — so
+those two hashes and the row count are the record that it is intact. `--export` refuses to
+overwrite it without `--force`.
+
+That the guard rejected 0 rows is the proof that all 918 scores are Claude's: for every row,
+the shipped heuristic produces a different reason string than the one stored.
+
+On the 918-row corpus the shipped scorer measures Spearman **+0.505** all rows and **+0.585**
+on the with-JD slice, promoting **287** rows at 7+ against Claude's 154 (precision 0.39,
+recall 0.73). The file and the column agree to the digit, which is the check that the two
+measurement paths are the same measurement:
+
+```bash
+python3 calibrate.py --db /tmp/cal-0.db                                  # jobs.score
+python3 calibrate.py --db /tmp/cal-0.db --labels calibration/claude-labels.json
 ```
 
 ## The corpus
