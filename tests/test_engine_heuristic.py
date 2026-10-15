@@ -451,6 +451,130 @@ def test_a_seed_placeholder_title_is_not_penalised_as_above_band(ctx):
 
 # --------------------------------------------------------------------------- off lane
 
+DOTNET_JD = (
+    "Requirements: 3+ years building web applications. Strong C# and ASP.NET skills, "
+    "experience with Entity Framework and .NET Core, and an Angular or React front end. "
+    "Our services are written in C#. Java exposure and system design are a plus. Hyderabad."
+)
+
+
+def test_a_foreign_dominant_jd_is_penalised_and_a_java_jd_is_not(ctx):
+    """
+    The measured failure: a .NET/Angular/React req scored 9/10 because its JD said Java,
+    system design, 3 years and Hyderabad -- every positive signal the scorer had. The penalty
+    DIRECTION is what this asserts: the same JD with the foreign terms taken out must score
+    strictly higher, and a genuine Java req must not fire the dimension at all.
+    """
+    dotnet = eh.score_one(row(description=DOTNET_JD), ctx)
+    cleaned = DOTNET_JD
+    for term in ("C#", "ASP.NET", "Entity Framework", ".NET Core", "Angular", "React"):
+        cleaned = cleaned.replace(term, "backend")
+    without = eh.score_one(row(description=cleaned), ctx)
+    assert dotnet.parts["dominant_stack"] < 0
+    assert dotnet.points < without.points
+    assert "dominant_stack" not in without.parts
+    assert "not this stack" in dotnet.reason
+
+    java = eh.score_one(row(description="Requirements: 3+ years with Java, Spring Boot, "
+                                        "microservices on AWS and Kafka. System design "
+                                        "matters here. Hyderabad."), ctx)
+    assert "dominant_stack" not in java.parts
+
+
+def test_the_measured_failure_title_shape_is_caught(ctx):
+    # The live row this dimension was built for: ".Net Fullstack with Angular/ Reactjs
+    # (Software Engineer II)" at a target employer in Hyderabad asking 3 years, which the
+    # scorer put at 9 because the JD also said Java and system design. A bare `.net` is
+    # matchable where `asp.net` is not, so the title itself is evidence.
+    jd = ("Requirements: 3+ years. Build .NET services with Angular and Reactjs. Java and "
+          "system design exposure helps.")
+    v = eh.score_one(row(title=".Net Fullstack with Angular/ Reactjs (Software Engineer II)",
+                         company="JP Morgan Chase", description=jd), ctx)
+    assert v.parts["dominant_stack"] < 0
+    assert eh._present(ctx, eh.pad(".net fullstack with angular"), ".net")
+    # The suffix spelling still cannot see a dot that follows a letter, which is why asp.net
+    # is listed as its own term rather than relied on here.
+    assert not eh._present(ctx, eh.pad("we use asp.net here"), ".net")
+    assert eh._present(ctx, eh.pad("we use asp.net here"), "asp.net")
+
+
+def test_one_passing_mention_of_a_foreign_stack_does_not_fire(ctx):
+    # Every other Java JD says "some C# exposure helps". A single mention is not evidence of
+    # whose stack the JD is about, which is why the dimension has a mention floor.
+    v = eh.score_one(row(description="Requirements: Java, Spring Boot and AWS. Some C# "
+                                     "exposure is a plus."), ctx)
+    assert "dominant_stack" not in v.parts
+    stack, own, foreign = eh.dominant_stack(ctx, eh.pad("Software Engineer II"),
+                                            eh.pad("Java, Spring Boot, AWS. Some C# here."))
+    assert stack is None
+    assert foreign < eh.DEFAULTS["weights"]["dominant_stack_min_mentions"]
+    assert own > foreign
+
+
+def test_a_jd_naming_both_stacks_heavily_does_not_fire(ctx):
+    # A genuine Java/Spring shop with a React front end names both. The ratio test is what
+    # keeps that req out of the penalty, and it is the case the owner would be angriest to
+    # lose.
+    jd = ("Requirements: Java, Spring Boot, Spring, Kafka, AWS, microservices and "
+          "distributed systems. Java services talk to a React and Redux front end; some "
+          "React work is expected.")
+    v = eh.score_one(row(description=jd), ctx)
+    stack, own, foreign = eh.dominant_stack(ctx, eh.pad("Software Engineer II"), eh.pad(jd))
+    assert stack is None
+    assert foreign >= eh.DEFAULTS["weights"]["dominant_stack_min_mentions"]
+    assert own * eh.DEFAULTS["weights"]["dominant_stack_ratio"] > foreign
+    assert "dominant_stack" not in v.parts
+
+
+def test_a_stack_in_the_title_counts_more_than_one_in_the_body(ctx):
+    # A stack in the title is the job, not a thing the job touches.
+    body = eh.pad("we use salesforce apex here")
+    assert eh.dominant_stack(ctx, eh.pad("Software Engineer II"), body)[2] < \
+        eh.dominant_stack(ctx, eh.pad("Salesforce Engineer II"), body)[2]
+
+
+def test_a_blind_row_never_gets_a_dominant_stack_part(ctx):
+    # No JD, no stack evidence. The no-JD path must not invent any.
+    for title in ("Software Engineer II", ".NET Developer II", "Salesforce Engineer II"):
+        v = eh.score_one(row(title=title, description=""), ctx)
+        assert "dominant_stack" not in v.parts, title
+
+
+def test_the_dominant_stack_dimension_is_independent_of_never_claim(ctx):
+    # Both fire on the same req and that is intended: the resume cannot claim C#, AND the JD
+    # is mostly C#. They are computed separately and named separately in parts.
+    v = eh.score_one(row(description=DOTNET_JD), ctx)
+    assert v.parts["dominant_stack"] < 0
+    assert v.parts["never_claim"] < 0
+
+
+def test_the_dominant_stack_penalty_is_floored_at_its_max(ctx):
+    jd = "Requirements: " + "C# and ASP.NET and Entity Framework and WPF and dotnet. " * 6
+    v = eh.score_one(row(title=".NET Developer II", description=jd), ctx)
+    assert v.parts["dominant_stack"] == pytest.approx(
+        eh.DEFAULTS["weights"]["dominant_stack_max"])
+
+
+def test_the_new_dominant_stack_weights_are_rejected_with_the_wrong_sign():
+    with pytest.raises(engine.ConfigError) as e:
+        eh.build_context({**PROFILE,
+                          "scoring": {"weights": {"dominant_stack_max": 2.0}}}, MASTER)
+    assert "dominant_stack_max" in str(e.value) and "negative" in str(e.value)
+    for bad in (0, -6.0):
+        with pytest.raises(engine.ConfigError) as e:
+            eh.build_context({**PROFILE,
+                              "scoring": {"weights": {"dominant_stack_saturate": bad}}},
+                             MASTER)
+        assert "dominant_stack_saturate" in str(e.value)
+
+
+def test_an_uppercase_foreign_stack_term_is_a_startup_error():
+    with pytest.raises(engine.ConfigError) as e:
+        eh.build_context({**PROFILE,
+                          "scoring": {"foreign_stacks": {"dotnet": ["C#"]}}}, MASTER)
+    assert "lowercase" in str(e.value)
+
+
 def test_off_lane_density_needs_repetition_not_one_mention(ctx):
     # One mention of front-end is in every full-stack backend JD; four mentions of React is a
     # React job. A presence test fired on nearly every req and made the signal noise.

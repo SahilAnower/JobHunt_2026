@@ -61,6 +61,11 @@ DEFAULTS: dict = {
         "boilerplate_cap": 0.5,
         "off_lane_max": -2.0,
         "off_lane_saturate": 1.5,
+        "dominant_stack_max": -2.0,
+        "dominant_stack_saturate": 6.0,
+        "dominant_stack_title_mult": 2.0,
+        "dominant_stack_min_mentions": 3,
+        "dominant_stack_ratio": 1.5,
         "never_claim_per": -0.6,
         "never_claim_cap": -1.8,
         "cs_degree_required": -0.8,
@@ -203,6 +208,32 @@ DEFAULTS: dict = {
     },
     "off_lane_dense_weight": 0.6,
 
+    # Negative evidence, counted rather than detected. `off_lane_titles` reads the title and
+    # `off_lane_dense` needs a named term repeated, so between them they fired on 63 of 918
+    # rows -- too thin to catch the measured failure: a .NET/Angular/React req scored 9/10
+    # because its JD happened to say Java, system design, 3 years and Hyderabad. The question
+    # that req fails is not "does it mention anything off lane" but "whose stack is this JD
+    # mostly about", so these two vocabularies are counted against each other.
+    "own_stack": ["java", "spring boot", "spring", "aws", "python", "microservices",
+                  "distributed systems", "kafka"],
+    # stack name -> terms. SPELL THE WHOLE TOKEN: `.net` would miss "asp.net" entirely,
+    # because a term starting with punctuation does not match when a letter precedes it.
+    "foreign_stacks": {
+        # `.net` standing alone IS matchable and is what the measured failure's own title
+        # says (".Net Fullstack with Angular/ Reactjs"); `asp.net` is listed separately
+        # because `.net` cannot match when a letter precedes the dot.
+        "dotnet": ["c#", ".net", ".net core", "asp.net", "dotnet", "entity framework", "wpf"],
+        "angular_primary": ["angular", "angularjs", "rxjs", "ngrx"],
+        "react_primary": ["react", "redux", "next.js"],
+        "php": ["php", "laravel", "symfony"],
+        "ruby": ["ruby", "ruby on rails", "rails"],
+        "go_primary": ["golang", "go modules", "goroutine"],
+        "mobile": ["ios", "android", "swiftui", "kotlin", "react native", "flutter"],
+        "low_code": ["salesforce", "apex", "servicenow", "sap abap"],
+        "qa": ["sdet", "selenium", "test automation", "cypress", "manual testing"],
+        "data_science": ["pytorch", "scikit-learn", "pandas", "jupyter", "model training"],
+    },
+
     # comp.dealbreakers, expressed as phrases a script can find.
     "services_signals": [
         "client requirements", "client projects", "staffing", "contract to hire", "c2h",
@@ -230,9 +261,11 @@ PENALTY_KEYS = frozenset({
     "yoe_below_band", "yoe_per_year_over", "yoe_floor", "off_lane_max", "never_claim_per",
     "never_claim_cap", "cs_degree_required", "services_per", "services_cap",
     "title_above_band", "title_below_band", "title_excluded", "no_jd_title_excluded",
+    "dominant_stack_max",
 })
 # Divisors and caps on a positive sum. Zero is a ZeroDivisionError, negative inverts the sign.
-SATURATE_KEYS = frozenset({"overlap_saturate", "off_lane_saturate", "boilerplate_cap"})
+SATURATE_KEYS = frozenset({"overlap_saturate", "off_lane_saturate", "boilerplate_cap",
+                           "dominant_stack_saturate"})
 # Signed and unconstrained: shipping them at zero is the point, and the sign is the owner's.
 FREE_KEYS = frozenset({"comp_risk_employer"})
 
@@ -345,6 +378,18 @@ def requirements_zone(low: str) -> str:
     return low[m.start():] if m else low
 
 
+def own_stack(cfg: dict) -> list[str]:
+    """The owner's stack terms, normalised once so the counter and the compiler agree."""
+    return sorted({str(t).lower() for t in (cfg.get("own_stack") or [])})
+
+
+def foreign_stacks(cfg: dict) -> dict[str, list[str]]:
+    """stack name -> terms, normalised and sorted so the dominant stack never depends on
+    dict order when two stacks tie."""
+    return {str(name): sorted({str(t).lower() for t in (terms or [])})
+            for name, terms in sorted((cfg.get("foreign_stacks") or {}).items())}
+
+
 # --------------------------------------------------------------------------- context
 
 # Re-exported from engine so a stage can catch it without importing this module, which is
@@ -425,7 +470,8 @@ def _check_terms_lowercase(cfg: dict) -> None:
                               f"lowercase; an uppercase term never matches.")
 
     for key in ("skills", "in_band_titles", "above_band_titles", "below_band_titles",
-                "off_lane_titles", "off_lane_dense", "services_signals", "never_claim_extra"):
+                "off_lane_titles", "off_lane_dense", "services_signals", "never_claim_extra",
+                "own_stack", "foreign_stacks"):
         walk(cfg.get(key), key)
 
 
@@ -535,6 +581,9 @@ def build_context(profile: dict, master: str | None = None) -> Ctx:
         compile_terms(fetch._terms(cfg, key))
     compile_terms((cfg.get("off_lane_titles") or {}).keys())
     compile_terms((cfg.get("off_lane_dense") or {}).keys())
+    compile_terms(own_stack(cfg))
+    for terms in foreign_stacks(cfg).values():
+        compile_terms(terms)
     compile_terms(str(s).lower() for s in (cfg.get("services_signals") or []))
     compile_terms(STARTUP_SIGNS)
 
@@ -634,6 +683,49 @@ def overlap_bonus(ctx: Ctx, low: str, zone: str) -> tuple[float, list[tuple[str,
     sat = float(w["overlap_saturate"])
     bonus = float(w["overlap_max"]) * min(strong + boiler, sat) / sat
     return bonus, sorted(scored, key=lambda x: (-x[1], x[0]))
+
+
+def dominant_stack(ctx: Ctx, tlow: str, low: str) -> tuple[str | None, float, float]:
+    """
+    (dominant foreign stack or None, own mentions, that stack's mentions). Pure.
+
+    Negative evidence by counting, not by detection. The failure this answers was measured: a
+    .NET/Angular/React req scored 9/10 because its JD said Java, system design, 3 years and
+    Hyderabad -- every positive signal the scorer had, with no dimension asking whose stack the
+    JD was actually about. `off_lane_titles` reads only the title and `off_lane_dense` needs a
+    specific term repeated, so the pair fired on 63 of 918 rows and missed this one entirely.
+
+    Mentions are counted across the whole JD and the title, the title weighted
+    `dominant_stack_title_mult` because a stack named in the title is the job rather than a
+    thing the job touches. The highest-counting foreign stack is the dominant one, and it fires
+    only when it clears BOTH `dominant_stack_min_mentions` (so one passing mention of C# in a
+    Java JD is not evidence) AND `dominant_stack_ratio` times the owner's own mentions (so a
+    genuine Java/Spring JD that also runs a React front end is not penalised for saying so).
+
+    The returned counts are the real ones whether or not the stack fires, so a caller can
+    explain a near miss. Both counts can exceed the number of distinct terms: overlapping
+    vocabulary ("spring boot" also matching "spring") inflates the OWN side, which biases this
+    towards not firing.
+    """
+    w = ctx.w
+    tmult = float(w["dominant_stack_title_mult"])
+
+    def tally(terms) -> float:
+        return float(sum(_count(ctx, low, t) + tmult * _count(ctx, tlow, t) for t in terms))
+
+    own = tally(own_stack(ctx.cfg))
+    best_name, best = None, 0.0
+    for name, terms in foreign_stacks(ctx.cfg).items():
+        n = tally(terms)
+        if n > best:
+            best_name, best = name, n
+    if best_name is None:
+        return None, own, 0.0
+    if best < float(w["dominant_stack_min_mentions"]):
+        return None, own, best
+    if best < float(w["dominant_stack_ratio"]) * max(own, 1.0):
+        return None, own, best
+    return best_name, own, best
 
 
 def geo_bucket(ctx: Ctx, row) -> str:
@@ -810,6 +902,19 @@ def score_one(row, ctx: Ctx) -> Verdict:
             add("off_lane", pen)
             points += pen
             clauses.append((30, "off lane: " + ", ".join(off_named[:3])))
+
+        # 4b. Whose stack is this JD mostly about. Independent of 4 and allowed to stack with
+        # it, which is the intended reading of a "React Developer" title on a React-dominant
+        # JD: the title is off lane AND the work is someone else's stack. Has-JD only -- a
+        # blind row carries no stack evidence to count.
+        stack, own_n, foreign_n = dominant_stack(ctx, tlow, low)
+        if stack:
+            dsat = float(w["dominant_stack_saturate"])
+            pen = max(w["dominant_stack_max"],
+                      w["dominant_stack_max"] * min(foreign_n, dsat) / dsat)
+            add("dominant_stack", pen)
+            points += pen
+            clauses.append((35, f"JD is mostly {stack.replace('_', ' ')}, not this stack"))
 
         # 5. Never-claim terms demanded in the requirements zone. The resume's list outranks
         # the JD, so these can only ever subtract.

@@ -326,6 +326,18 @@ scoring:
     boilerplate_cap: 0.5
     off_lane_max: -2.0
     off_lane_saturate: 1.5
+    # Negative evidence, counted rather than detected: see `own_stack` / `foreign_stacks`
+    # below. `dominant_stack_max` is the floor of the penalty and `dominant_stack_saturate` is
+    # how many mentions reach it. A stack named in the TITLE counts
+    # `dominant_stack_title_mult` times, because a stack in the title is the job rather than
+    # something the job touches. It fires only when the dominant foreign stack clears BOTH
+    # `dominant_stack_min_mentions` and `dominant_stack_ratio` times your own mentions, so a
+    # single passing mention, or a genuine backend JD that also names a front end, is safe.
+    dominant_stack_max: -2.0
+    dominant_stack_saturate: 6.0
+    dominant_stack_title_mult: 2.0
+    dominant_stack_min_mentions: 3
+    dominant_stack_ratio: 1.5
     never_claim_per: -0.6
     never_claim_cap: -1.8
     cs_degree_required: -0.8
@@ -525,6 +537,74 @@ scoring:
     tableau: 2
     power bi: 2
   off_lane_dense_weight: 0.6
+  # The two vocabularies the dominant-stack dimension counts against each other. `own_stack`
+  # is YOUR stack; each entry under `foreign_stacks` is somebody else's, and the one with the
+  # most mentions is the JD's dominant stack. A req that says Java once and C# nine times is
+  # a .NET job that mentioned Java, and this is the dimension that says so. Spell the whole
+  # token (`asp.net`, not `.net`) and keep every term lowercase.
+  own_stack:
+  - java
+  - spring boot
+  - spring
+  - aws
+  - python
+  - microservices
+  - distributed systems
+  - kafka
+  foreign_stacks:
+    dotnet:
+    - c#
+    - .net
+    - .net core
+    - asp.net
+    - dotnet
+    - entity framework
+    - wpf
+    angular_primary:
+    - angular
+    - angularjs
+    - rxjs
+    - ngrx
+    react_primary:
+    - react
+    - redux
+    - next.js
+    php:
+    - php
+    - laravel
+    - symfony
+    ruby:
+    - ruby
+    - ruby on rails
+    - rails
+    go_primary:
+    - golang
+    - go modules
+    - goroutine
+    mobile:
+    - ios
+    - android
+    - swiftui
+    - kotlin
+    - react native
+    - flutter
+    low_code:
+    - salesforce
+    - apex
+    - servicenow
+    - sap abap
+    qa:
+    - sdet
+    - selenium
+    - test automation
+    - cypress
+    - manual testing
+    data_science:
+    - pytorch
+    - scikit-learn
+    - pandas
+    - jupyter
+    - model training
   services_signals:
   - client requirements
   - client projects
