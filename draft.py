@@ -176,7 +176,7 @@ def write_draft(job, message: str, risks: str, kind: str) -> Path:
     return path
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--min-score", type=int)
@@ -185,9 +185,13 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=6,
                     help="how many drafts to write (default: %(default)s)")
     ap.add_argument("--redraft", action="store_true", help="draft again even if one exists")
+    ap.add_argument("--no-company-cap", action="store_true",
+                    help="ignore runtime.company_cap and draft strictly by score")
+    ap.add_argument("--db", type=Path, default=None,
+                    help="draft from this database instead of jobhunt.db")
     ap.add_argument("--engine", choices=engine.VALID,
                     help="override runtime.engine for this run")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     profile = jobprofile.load()
     rt = jobprofile.runtime(profile)
@@ -199,7 +203,8 @@ def main() -> int:
         print(e)
         return 1
 
-    with store.connect() as conn:
+    capped = 0
+    with store.connect(args.db or store.DB_PATH) as conn:
         if args.key:
             marks = ",".join("?" * len(args.key))
             rows = conn.execute(
@@ -207,6 +212,18 @@ def main() -> int:
             ).fetchall()
         else:
             rows = store.promoted(conn, threshold)
+            # The concentration cap, before --limit rather than after. A run writes six drafts
+            # and `promoted` is ordered by score, so without this all six could go to one
+            # company — JP Morgan Chase alone has 54 open un-actioned reqs, and 39 of the
+            # owner's 132 applications already went there. Six asks into one employer is a
+            # worse use of a morning than two asks into three.
+            #
+            # --key is deliberately exempt: naming a key is an explicit instruction about one
+            # req, and a cap on an explicit instruction is just a bug.
+            if not args.no_company_cap:
+                cap = rt.get("company_cap", store.COMPANY_CAP)
+                rows, over = store.cap_per_company(rows, cap)
+                capped = len(over)
 
         # One referral ask per job, ever. Re-asking the same contact about the same req is
         # the fastest way to become someone's ignored message.
@@ -218,6 +235,10 @@ def main() -> int:
         if not todo:
             print(f"nothing to draft (threshold {threshold}, all already drafted)")
             return 0
+
+        if capped:
+            print(f"{capped} req(s) held back by the per-company cap; they stay in the "
+                  f"digest and are drafted on a later run (--no-company-cap to override)")
 
         print(f"{len(todo)} draft(s) to write:")
         for r in todo:

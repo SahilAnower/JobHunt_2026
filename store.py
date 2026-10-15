@@ -17,6 +17,7 @@ property is what lets run.py be scheduled without any state outside this file.
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import json
 import re
@@ -27,6 +28,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "jobhunt.db"
+
+# How much description text counts as "this req has a usable JD". The single source of that
+# rule: `fetch.JD_MIN_CHARS` is assigned from this, so enrichment's candidate query, the label
+# export's `has_jd` flag and the digest's confidence marker all read the same number.
+#
+# 700 is where a JavaScript-shell careers page stops being distinguishable from a real posting
+# — a shell comes back as a few hundred characters of nav and a cookie banner. It lives here
+# rather than in fetch.py because `store` is the module everything else already imports, and
+# `fetch` imports `store` (never the reverse), so this is the only direction that does not
+# create a cycle.
+#
+# Note the scorer does NOT use it: `engine_heuristic.score_one` treats any non-empty
+# description as a JD. The two rules disagree on rows holding 1-699 characters, which the
+# digest marks as blind while the scorer scored them as sighted. Changing the scorer's split is
+# a separate piece of work; see the known gaps note in CALIBRATION.md.
+JD_MIN_CHARS = 700
 
 # Job lifecycle. Only `new` is machine-assigned; the rest you set as things happen.
 STATUSES = [
@@ -127,6 +144,33 @@ def _migrate(conn: sqlite3.Connection) -> None:
     have = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)")}
     if "misses" not in have:
         conn.execute("ALTER TABLE jobs ADD COLUMN misses INTEGER NOT NULL DEFAULT 0")
+    # A second home for the Claude labels, inside the database they were produced in.
+    # calibration/claude-labels.json is the primary copy and the one `calibrate.py` measures
+    # against; these columns exist so that a DB which has been re-scored still carries what it
+    # used to say, and so `calibrate.py --label-column label_score` can measure a rescored
+    # file against its own history. Written only by `calibration_labels.py --apply` and by
+    # `score.py --rescore` just before it overwrites a score. Never by a fetch.
+    if "label_score" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN label_score INTEGER")
+    if "label_reason" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN label_reason TEXT")
+    # What `fetch.py --enrich` has already tried on this row. Without it, enrichment has no
+    # memory: the JS-shell careers pages and the URLs that answer 403 come back into the
+    # candidate set every single morning, and they are precisely the rows that can never
+    # succeed. Three recorded failures and a row stops eating the budget, which is what makes
+    # a budget of 120 land on rows that might actually yield text.
+    if "enrich_attempts" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN enrich_attempts INTEGER NOT NULL DEFAULT 0")
+    if "enrich_last" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN enrich_last TEXT")
+    if "enrich_note" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN enrich_note TEXT")
+    # Which engine wrote the score in this row. NULL means "written before this column
+    # existed", which for every row in the current corpus means claude. Without it a database
+    # that has been partly re-scored holds two different scales in one column with no way to
+    # tell the rows apart.
+    if "scored_by" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN scored_by TEXT")
 
 
 def job_key(company: str, title: str, url: str = "", req_id: str = "") -> str:
@@ -212,14 +256,70 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> bool:
     return True
 
 
-def set_score(conn, key: str, score: int, reason: str, lane=None, speed_note=None) -> None:
+def set_score(conn, key: str, score: int, reason: str, lane=None, speed_note=None,
+              scored_by: str | None = None) -> None:
+    """
+    Write a score. `scored_by` records which engine produced it.
+
+    That column is what makes a mixed database readable. The corpus is 918 rows of `claude`
+    judgement, and a heuristic run writes on the same scale without saying so, which is how a
+    column ends up holding two incomparable scales with no way to tell which row is which.
+    `COALESCE(?, scored_by)` so a caller that does not know leaves the existing value alone
+    rather than erasing it.
+    """
     conn.execute(
         """UPDATE jobs SET score = ?, score_reason = ?,
                   lane = COALESCE(?, lane), speed_note = ?,
+                  scored_by = COALESCE(?, scored_by),
                   status = CASE WHEN status = 'new' THEN 'scored' ELSE status END
            WHERE key = ?""",
-        (score, reason, lane, speed_note, key),
+        (score, reason, lane, speed_note, scored_by, key),
     )
+
+
+# Engines whose output is worth nothing as ground truth, because it can be re-derived from the
+# row at any time. The heuristic is a pure function of the JD and the profile: re-run it and you
+# get the same number back. Claude's judgement cannot be re-derived without spending the
+# owner's subscription on the whole corpus again, so that is what `label_score` is for.
+#
+# Getting this predicate wrong is not a cosmetic bug. Treating a heuristic score as a label
+# would have a second rescore quietly promote the first rescore's output to ground truth, and
+# then `calibrate.py --label-column label_score` would be measuring the heuristic against
+# itself and reporting a near-perfect correlation.
+REPLACEABLE_ENGINES = ("heuristic",)
+
+_IRREPLACEABLE = (
+    "score IS NOT NULL AND label_score IS NULL "
+    "AND (scored_by IS NULL OR scored_by NOT IN ('heuristic'))"
+)
+
+
+def protect_labels(conn) -> int:
+    """
+    Copy `score`/`score_reason` into `label_score`/`label_reason` for every row holding
+    judgement that cannot be re-derived. Returns how many rows were protected.
+
+    Called once, immediately before a rescore starts overwriting. Two rows are skipped: one
+    that already has a label — the label is the older and more trustworthy value — and one
+    whose score the heuristic wrote, which is not a label at all.
+    """
+    cur = conn.execute(
+        f"UPDATE jobs SET label_score = score, label_reason = score_reason "
+        f"WHERE {_IRREPLACEABLE}"
+    )
+    return cur.rowcount
+
+
+def unprotected_scores(conn) -> int:
+    """
+    Rows whose `score` is the only copy of judgement that cannot be re-derived.
+
+    This is the number a rescore would destroy for good, and what the gate in `score.py`
+    compares the label export against.
+    """
+    return conn.execute(
+        f"SELECT COUNT(*) c FROM jobs WHERE {_IRREPLACEABLE}"
+    ).fetchone()["c"]
 
 
 MISS_LIMIT = 3          # consecutive absences before a req is written off
@@ -287,16 +387,87 @@ def unscored(conn, limit: int = 50) -> list[sqlite3.Row]:
 
 
 def promoted(conn, threshold: int, since: str | None = None) -> list[sqlite3.Row]:
-    """Scored at or above the threshold and not yet acted on — the digest's main table."""
+    """
+    Scored at or above the threshold and not yet acted on — the digest's main table.
+
+    Rows carry a computed `has_jd` flag, and a sighted row outranks an equally-scored blind
+    one. That ordering is the honest one: a 7 derived from a JD and a 7 derived from a title,
+    a company and a city are not the same claim, and the second is the weaker of the two
+    because the scorer had almost nothing to read. 302 of the 918 scored rows are blind, so
+    this is not an edge case — ordering them below their sighted equals puts the reqs the
+    scorer actually had evidence for at the top of the list the owner reads first.
+
+    This changes the ORDER BY only. The threshold still decides what is promoted, no row is
+    filtered, and `company` still breaks the remaining ties so the output stays deterministic.
+    """
     sql = (
-        "SELECT * FROM jobs WHERE score >= ? AND still_open = 1 "
+        "SELECT *, (COALESCE(length(description), 0) >= ?) AS has_jd FROM jobs "
+        "WHERE score >= ? AND still_open = 1 "
         "AND status IN ('scored', 'new') "
     )
-    args: list = [threshold]
+    args: list = [JD_MIN_CHARS, threshold]
     if since:
         sql += "AND first_seen >= ? "
         args.append(since)
-    return conn.execute(sql + "ORDER BY score DESC, company", args).fetchall()
+    return conn.execute(sql + "ORDER BY score DESC, has_jd DESC, company", args).fetchall()
+
+
+def has_jd(job) -> bool:
+    """
+    Did the scorer have a JD to read for this row.
+
+    Reads the `has_jd` flag `promoted` computes when it is there and falls back to measuring
+    the description, so a caller holding a row from any other query gets the same answer. The
+    fallback matters: `digest.py` renders rows from three different queries and the marker has
+    to mean the same thing in all three.
+    """
+    try:
+        flag = job["has_jd"]
+    except (IndexError, KeyError, TypeError):
+        flag = None
+    if flag is not None:
+        return bool(flag)
+    try:
+        desc = job["description"]
+    except (IndexError, KeyError, TypeError):
+        return False
+    return len(desc or "") >= JD_MIN_CHARS
+
+
+COMPANY_CAP = 2
+
+
+def cap_per_company(rows, cap: int = COMPANY_CAP) -> tuple[list, list]:
+    """
+    Split `rows` into (kept, overflow), keeping at most `cap` rows per company. Pure.
+
+    Order-preserving in both halves, so the score ordering `promoted` established survives the
+    split and the overflow is itself in score order. The input order IS the priority: this
+    takes the first `cap` rows each company offers and defers the rest.
+
+    Why this exists. 39 of 132 applications went to JP Morgan Chase — 30% of the search in one
+    company — and the digest's action list is what drives that: JPMC has 54 open un-actioned
+    reqs, Bosch 29, Mastercard 21, so a list ordered by score alone is mostly one employer
+    whatever the scores say. Concentrating a search in one company is a worse bet than the same
+    effort spread across three, and a referral ask is per-company anyway.
+
+    This DEFERS, it does not drop. The caller is responsible for rendering the overflow
+    somewhere, and the digest does: reqs over the cap go into a collapsed block rather than
+    disappearing. A function that silently hid 52 open reqs would be a data-loss bug dressed
+    as a feature.
+
+    `cap <= 0` means no cap, rather than an empty list. A cap of zero is a config typo, and the
+    failure mode of reading it literally is a blank action list with every req in the overflow
+    block — a worse outcome than ignoring it. `--no-company-cap` is the supported way off.
+    """
+    if cap <= 0:
+        return list(rows), []
+    kept, overflow, seen = [], [], collections.Counter()
+    for r in rows:
+        company = (r["company"] or "").strip().casefold()
+        seen[company] += 1
+        (kept if seen[company] <= cap else overflow).append(r)
+    return kept, overflow
 
 
 def active(conn) -> list[sqlite3.Row]:

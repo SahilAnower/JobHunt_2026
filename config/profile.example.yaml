@@ -36,7 +36,8 @@ resume_summary: |
   latency 40% by reworking the caching layer.
 
   Recent work: an internal agentic tool using an LLM to triage support tickets, which
-  removed roughly 15 hours of manual work a week.
+  removed roughly 15 hours of manual work a week. Built on Amazon Bedrock.
+  Multi-agent pipeline driven by prompt engineering and tool use.
 
   Gaps to be honest about: no production frontend work beyond small React changes, and no
   Kubernetes ownership.
@@ -315,9 +316,29 @@ scoring:
     yoe_floor: -2.2
     overlap_max: 3.0
     overlap_saturate: 4.0
+    # How much a skill match is worth depending on WHERE the JD names it. A term inside the
+    # requirements/qualifications block counts at `overlap_zone_mult` of its skills weight; a
+    # term named only in the preamble counts at `overlap_preamble_mult`, because marketing
+    # prose mentioning Java is weaker evidence than Java under "Requirements:". A JD with no
+    # such heading has no preamble to discount, so every term is a zone match and the number
+    # is unchanged. Set `overlap_preamble_mult: 1.0` to switch the distinction off.
+    overlap_zone_mult: 1.0
+    overlap_preamble_mult: 0.6
     boilerplate_cap: 0.5
     off_lane_max: -2.0
     off_lane_saturate: 1.5
+    # Negative evidence, counted rather than detected: see `own_stack` / `foreign_stacks`
+    # below. `dominant_stack_max` is the floor of the penalty and `dominant_stack_saturate` is
+    # how many mentions reach it. A stack named in the TITLE counts
+    # `dominant_stack_title_mult` times, because a stack in the title is the job rather than
+    # something the job touches. It fires only when the dominant foreign stack clears BOTH
+    # `dominant_stack_min_mentions` and `dominant_stack_ratio` times your own mentions, so a
+    # single passing mention, or a genuine backend JD that also names a front end, is safe.
+    dominant_stack_max: -2.0
+    dominant_stack_saturate: 6.0
+    dominant_stack_title_mult: 2.0
+    dominant_stack_min_mentions: 3
+    dominant_stack_ratio: 1.5
     never_claim_per: -0.6
     never_claim_cap: -1.8
     cs_degree_required: -0.8
@@ -368,10 +389,13 @@ scoring:
       aws: 0.8
       microservices: 0.7
       spring: 0.7
-      kafka: 0.7
+      # No kafka (was 0.7) and no rabbitmq (was 0.5): neither appears anywhere in
+      # config/resume.md, so crediting them awarded 1.2 of overlap weight that cannot be
+      # defended in a screen, and it skewed the pipeline toward employers who post Kafka
+      # roles in volume. Add a term here only once the resume claims it — the evidence
+      # check below will refuse it otherwise.
       dynamodb: 0.6
       cdk: 0.6
-      rabbitmq: 0.5
       observability: 0.5
       infrastructure as code: 0.5
       multi-region: 0.5
@@ -388,10 +412,17 @@ scoring:
       docker: 0.2
       kubernetes: 0.2
     lane_b:
+      # Expanded to match the resume's GenAI & Agentic AI section: LLM application
+      # development, multi-agent orchestration, agentic workflows with subagents/skills/tool
+      # use, prompt engineering and Amazon Bedrock. `bedrock` moved up from `boilerplate`,
+      # where it sat because it was unevidenced when that tier was built.
       agentic: 0.9
       multi-agent: 0.9
       llm: 0.8
       genai: 0.6
+      prompt engineering: 0.5
+      bedrock: 0.5
+      tool use: 0.4
       agent: 0.3
     secondary:
       python: 0.3
@@ -414,7 +445,7 @@ scoring:
       ci/cd: 0.1
       rag: 0.1
       langchain: 0.1
-      bedrock: 0.1
+      # bedrock promoted to lane_b; a term must belong to exactly one tier
       typescript: 0.1
       scalable: 0.1
       restful: 0.1
@@ -450,10 +481,26 @@ scoring:
       - multi-agent
       - multi agent
       - multiagent
+      - multi-agent orchestration
+      - agent orchestration
+      - agentic orchestration
       genai:
       - genai
       - gen ai
       - generative ai
+      prompt engineering:
+      - prompt engineering
+      - prompt design
+      - prompting
+      tool use:
+      - tool use
+      - tool calling
+      - tool-calling
+      - function calling
+      bedrock:
+      - bedrock
+      - amazon bedrock
+      - aws bedrock
       llm:
       - llm
       - llms
@@ -517,6 +564,74 @@ scoring:
     tableau: 2
     power bi: 2
   off_lane_dense_weight: 0.6
+  # The two vocabularies the dominant-stack dimension counts against each other. `own_stack`
+  # is YOUR stack; each entry under `foreign_stacks` is somebody else's, and the one with the
+  # most mentions is the JD's dominant stack. A req that says Java once and C# nine times is
+  # a .NET job that mentioned Java, and this is the dimension that says so. Spell the whole
+  # token (`asp.net`, not `.net`) and keep every term lowercase.
+  own_stack:
+  - java
+  - spring boot
+  - spring
+  - aws
+  - python
+  - microservices
+  - distributed systems
+  - kafka
+  foreign_stacks:
+    dotnet:
+    - c#
+    - .net
+    - .net core
+    - asp.net
+    - dotnet
+    - entity framework
+    - wpf
+    angular_primary:
+    - angular
+    - angularjs
+    - rxjs
+    - ngrx
+    react_primary:
+    - react
+    - redux
+    - next.js
+    php:
+    - php
+    - laravel
+    - symfony
+    ruby:
+    - ruby
+    - ruby on rails
+    - rails
+    go_primary:
+    - golang
+    - go modules
+    - goroutine
+    mobile:
+    - ios
+    - android
+    - swiftui
+    - kotlin
+    - react native
+    - flutter
+    low_code:
+    - salesforce
+    - apex
+    - servicenow
+    - sap abap
+    qa:
+    - sdet
+    - selenium
+    - test automation
+    - cypress
+    - manual testing
+    data_science:
+    - pytorch
+    - scikit-learn
+    - pandas
+    - jupyter
+    - model training
   services_signals:
   - client requirements
   - client projects
@@ -574,11 +689,28 @@ runtime:
                              # Raise this first when the digest feels thin. score_threshold also
                              # gates drafting and resume tailoring, so lowering that sends every
                              # near-miss through both stages; this only changes what you see.
+  company_cap: 2             # how many reqs per company reach the digest's action lists and a
+                             # draft run at once. The boards are lumpy — one employer can hold
+                             # 50 open reqs in band — so a list ordered by score alone becomes
+                             # one company, and six drafts in a morning all go to it. Reqs over
+                             # the cap are NOT dropped: the digest lists them in a collapsed
+                             # block and a later run drafts them. Set to 0 for no cap, or pass
+                             # `draft.py --no-company-cap` for one run.
   max_parallel_claude: 4     # concurrent `claude -p` calls in score.py and draft.py. Each is a
                              # subprocess waiting on a network round trip, so they overlap well.
                              # Set to 1 for the old strictly-serial behaviour.
   max_score_batch: 12        # reqs per scoring call — one call judging twelve is more
                              # consistent than twelve calls judging one
+  enrich_limit: 120          # posting pages `fetch.py --enrich` fetches per run to recover
+                             # missing JD text. A req scored with no JD caps out around 6, so
+                             # this is the cheapest way to raise scoring quality. Each one is
+                             # an HTTP request to someone else's server: eight at a time with
+                             # a per-worker delay. `--enrich-limit` overrides it for one run.
+  enrich_max_attempts: 3     # stop chasing a row after this many failed attempts. Most
+                             # failures are permanent — a JavaScript-shell careers page serves
+                             # the same shell tomorrow — and without a ceiling those rows come
+                             # back every run and spend the budget in front of rows that would
+                             # have yielded text. Raise it to give written-off rows another go.
   # Sent on every board request. Some ATS edges reject an obviously scripted agent.
   user_agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)
     Chrome/124.0 Safari/537.36

@@ -56,9 +56,16 @@ DEFAULTS: dict = {
         "yoe_floor": -2.2,
         "overlap_max": 3.0,
         "overlap_saturate": 4.0,
+        "overlap_zone_mult": 1.0,
+        "overlap_preamble_mult": 0.6,
         "boilerplate_cap": 0.5,
         "off_lane_max": -2.0,
         "off_lane_saturate": 1.5,
+        "dominant_stack_max": -2.0,
+        "dominant_stack_saturate": 6.0,
+        "dominant_stack_title_mult": 2.0,
+        "dominant_stack_min_mentions": 3,
+        "dominant_stack_ratio": 1.5,
         "never_claim_per": -0.6,
         "never_claim_cap": -1.8,
         "cs_degree_required": -0.8,
@@ -101,10 +108,13 @@ DEFAULTS: dict = {
             "aws": 0.8,
             "microservices": 0.7,
             "spring": 0.7,
-            "kafka": 0.7,
+            # kafka (0.7) and rabbitmq (0.5) were removed deliberately. Neither appears
+            # anywhere in config/resume.md, so crediting them awarded 1.2 of overlap weight
+            # the owner cannot defend in a screen. It also skewed the pipeline: JP Morgan
+            # Chase posts Kafka roles constantly and reached 39 of 132 applications with no
+            # conversations. Add them back only if the resume claims them first.
             "dynamodb": 0.6,
             "cdk": 0.6,
-            "rabbitmq": 0.5,
             "observability": 0.5,
             "infrastructure as code": 0.5,
             "multi-region": 0.5,
@@ -122,10 +132,25 @@ DEFAULTS: dict = {
             "kubernetes": 0.2,
         },
         "lane_b": {
+            # Expanded to match the GenAI & Agentic AI section of the resume, which lists LLM
+            # application development, multi-agent orchestration, agentic workflows with
+            # subagents/skills/tool use, prompt engineering and Amazon Bedrock. This is the
+            # owner's clearest differentiator and five terms under-represented it. "bedrock"
+            # moved up from the boilerplate tier: it was unevidenced when that tier was built
+            # and the resume now claims it.
             "agentic": 0.9,
             "multi-agent": 0.9,
             "llm": 0.8,
             "genai": 0.6,
+            # No "agent orchestration" entry: the resume says "Multi-Agent Systems &
+            # Orchestration", so the phrase itself is not claimed and the evidence check
+            # rightly refuses it. "multi-agent" above already carries the concept at 0.9, and
+            # a JD asking for agent orchestration almost always says agentic or multi-agent
+            # too. Adding the phrase to the resume purely to satisfy the scorer would be
+            # gaming the measurement rather than improving it.
+            "prompt engineering": 0.5,
+            "bedrock": 0.5,
+            "tool use": 0.4,
             "agent": 0.3,
         },
         "secondary": {
@@ -154,7 +179,9 @@ DEFAULTS: dict = {
         "boilerplate": {
             "sqs": 0.1, "s3": 0.1, "ecs": 0.1, "cloudformation": 0.1, "sns": 0.1,
             "high throughput": 0.1, "low latency": 0.1, "ci/cd": 0.1, "rag": 0.1,
-            "langchain": 0.1, "bedrock": 0.1, "typescript": 0.1, "scalable": 0.1,
+            # "bedrock" was promoted to lane_b once the resume claimed Amazon Bedrock. Do not
+            # re-add it here: a term listed in two tiers is counted twice.
+            "langchain": 0.1, "typescript": 0.1, "scalable": 0.1,
             "restful": 0.1,
         },
         "aliases": {
@@ -168,9 +195,14 @@ DEFAULTS: dict = {
             "ci/cd": ["ci/cd", "cicd", "ci cd"],
             "rest api": ["rest api", "rest apis", "restful api"],
             "postgresql": ["postgresql", "postgres"],
-            "multi-agent": ["multi-agent", "multi agent", "multiagent"],
             "genai": ["genai", "gen ai", "generative ai"],
             "llm": ["llm", "llms", "large language model"],
+            "multi-agent": ["multi-agent", "multi agent", "multiagent",
+                            "multi-agent orchestration", "agent orchestration",
+                            "agentic orchestration"],
+            "prompt engineering": ["prompt engineering", "prompt design", "prompting"],
+            "tool use": ["tool use", "tool calling", "tool-calling", "function calling"],
+            "bedrock": ["bedrock", "amazon bedrock", "aws bedrock"],
         },
     },
 
@@ -201,6 +233,32 @@ DEFAULTS: dict = {
     },
     "off_lane_dense_weight": 0.6,
 
+    # Negative evidence, counted rather than detected. `off_lane_titles` reads the title and
+    # `off_lane_dense` needs a named term repeated, so between them they fired on 63 of 918
+    # rows -- too thin to catch the measured failure: a .NET/Angular/React req scored 9/10
+    # because its JD happened to say Java, system design, 3 years and Hyderabad. The question
+    # that req fails is not "does it mention anything off lane" but "whose stack is this JD
+    # mostly about", so these two vocabularies are counted against each other.
+    "own_stack": ["java", "spring boot", "spring", "aws", "python", "microservices",
+                  "distributed systems", "kafka"],
+    # stack name -> terms. SPELL THE WHOLE TOKEN: `.net` would miss "asp.net" entirely,
+    # because a term starting with punctuation does not match when a letter precedes it.
+    "foreign_stacks": {
+        # `.net` standing alone IS matchable and is what the measured failure's own title
+        # says (".Net Fullstack with Angular/ Reactjs"); `asp.net` is listed separately
+        # because `.net` cannot match when a letter precedes the dot.
+        "dotnet": ["c#", ".net", ".net core", "asp.net", "dotnet", "entity framework", "wpf"],
+        "angular_primary": ["angular", "angularjs", "rxjs", "ngrx"],
+        "react_primary": ["react", "redux", "next.js"],
+        "php": ["php", "laravel", "symfony"],
+        "ruby": ["ruby", "ruby on rails", "rails"],
+        "go_primary": ["golang", "go modules", "goroutine"],
+        "mobile": ["ios", "android", "swiftui", "kotlin", "react native", "flutter"],
+        "low_code": ["salesforce", "apex", "servicenow", "sap abap"],
+        "qa": ["sdet", "selenium", "test automation", "cypress", "manual testing"],
+        "data_science": ["pytorch", "scikit-learn", "pandas", "jupyter", "model training"],
+    },
+
     # comp.dealbreakers, expressed as phrases a script can find.
     "services_signals": [
         "client requirements", "client projects", "staffing", "contract to hire", "c2h",
@@ -228,9 +286,11 @@ PENALTY_KEYS = frozenset({
     "yoe_below_band", "yoe_per_year_over", "yoe_floor", "off_lane_max", "never_claim_per",
     "never_claim_cap", "cs_degree_required", "services_per", "services_cap",
     "title_above_band", "title_below_band", "title_excluded", "no_jd_title_excluded",
+    "dominant_stack_max",
 })
 # Divisors and caps on a positive sum. Zero is a ZeroDivisionError, negative inverts the sign.
-SATURATE_KEYS = frozenset({"overlap_saturate", "off_lane_saturate", "boilerplate_cap"})
+SATURATE_KEYS = frozenset({"overlap_saturate", "off_lane_saturate", "boilerplate_cap",
+                           "dominant_stack_saturate"})
 # Signed and unconstrained: shipping them at zero is the point, and the sign is the owner's.
 FREE_KEYS = frozenset({"comp_risk_employer"})
 
@@ -343,6 +403,18 @@ def requirements_zone(low: str) -> str:
     return low[m.start():] if m else low
 
 
+def own_stack(cfg: dict) -> list[str]:
+    """The owner's stack terms, normalised once so the counter and the compiler agree."""
+    return sorted({str(t).lower() for t in (cfg.get("own_stack") or [])})
+
+
+def foreign_stacks(cfg: dict) -> dict[str, list[str]]:
+    """stack name -> terms, normalised and sorted so the dominant stack never depends on
+    dict order when two stacks tie."""
+    return {str(name): sorted({str(t).lower() for t in (terms or [])})
+            for name, terms in sorted((cfg.get("foreign_stacks") or {}).items())}
+
+
 # --------------------------------------------------------------------------- context
 
 # Re-exported from engine so a stage can catch it without importing this module, which is
@@ -423,7 +495,8 @@ def _check_terms_lowercase(cfg: dict) -> None:
                               f"lowercase; an uppercase term never matches.")
 
     for key in ("skills", "in_band_titles", "above_band_titles", "below_band_titles",
-                "off_lane_titles", "off_lane_dense", "services_signals", "never_claim_extra"):
+                "off_lane_titles", "off_lane_dense", "services_signals", "never_claim_extra",
+                "own_stack", "foreign_stacks"):
         walk(cfg.get(key), key)
 
 
@@ -533,6 +606,9 @@ def build_context(profile: dict, master: str | None = None) -> Ctx:
         compile_terms(fetch._terms(cfg, key))
     compile_terms((cfg.get("off_lane_titles") or {}).keys())
     compile_terms((cfg.get("off_lane_dense") or {}).keys())
+    compile_terms(own_stack(cfg))
+    for terms in foreign_stacks(cfg).values():
+        compile_terms(terms)
     compile_terms(str(s).lower() for s in (cfg.get("services_signals") or []))
     compile_terms(STARTUP_SIGNS)
 
@@ -598,6 +674,83 @@ def matched_skills(ctx: Ctx, low: str) -> list[tuple[str, float, str]]:
         if any(_present(ctx, low, s) for s in ctx.spellings[term]):
             out.append((term, ctx.skills[term], ctx.tier_of[term]))
     return sorted(out, key=lambda x: (-x[1], x[0]))
+
+
+def overlap_bonus(ctx: Ctx, low: str, zone: str) -> tuple[float, list[tuple[str, float, str]]]:
+    """
+    The overlap bonus and the matched terms at their effective weights, zone-weighted.
+
+    `requirements_zone` already separates what a JD *requires* from what it merely *says*, and
+    the never-claim dimension has used that split from the start. Overlap did not: a term named
+    once in the marketing preamble ("we are a Java shop at heart") earned exactly what a term
+    listed under `Requirements:` earned, so prose scored like a hard requirement. A term inside
+    the zone is now worth `overlap_zone_mult` of its weight and a term only outside it
+    `overlap_preamble_mult`, each canonical term counted once at the better of the two.
+
+    The boilerplate tier is multiplied the same way and keeps its own `boilerplate_cap` sum, so
+    the cap still bounds the whole unevidenced tier rather than being applied per term.
+
+    When `ZONE_HEAD` finds no heading the zone IS the whole JD, so every term is a zone match
+    and the number is unchanged. That is the common case for heading-less aggregator JDs, and
+    it is deliberate: there is no preamble to discount when the JD has no structure to read.
+    """
+    w = ctx.w
+    zmult, pmult = float(w["overlap_zone_mult"]), float(w["overlap_preamble_mult"])
+    scored: list[tuple[str, float, str]] = []
+    for term, weight, tier in matched_skills(ctx, low):
+        in_zone = any(_present(ctx, zone, s) for s in ctx.spellings[term])
+        # `max` rather than zmult: "the better of the two" is the owner's config, not this
+        # function's assumption that the zone multiplier is the larger one.
+        scored.append((term, weight * (max(zmult, pmult) if in_zone else pmult), tier))
+    strong = sum(e for _, e, tier in scored if tier in EVIDENCED_TIERS)
+    boiler = min(sum(e for _, e, tier in scored if tier == "boilerplate"),
+                 float(w["boilerplate_cap"]))
+    sat = float(w["overlap_saturate"])
+    bonus = float(w["overlap_max"]) * min(strong + boiler, sat) / sat
+    return bonus, sorted(scored, key=lambda x: (-x[1], x[0]))
+
+
+def dominant_stack(ctx: Ctx, tlow: str, low: str) -> tuple[str | None, float, float]:
+    """
+    (dominant foreign stack or None, own mentions, that stack's mentions). Pure.
+
+    Negative evidence by counting, not by detection. The failure this answers was measured: a
+    .NET/Angular/React req scored 9/10 because its JD said Java, system design, 3 years and
+    Hyderabad -- every positive signal the scorer had, with no dimension asking whose stack the
+    JD was actually about. `off_lane_titles` reads only the title and `off_lane_dense` needs a
+    specific term repeated, so the pair fired on 63 of 918 rows and missed this one entirely.
+
+    Mentions are counted across the whole JD and the title, the title weighted
+    `dominant_stack_title_mult` because a stack named in the title is the job rather than a
+    thing the job touches. The highest-counting foreign stack is the dominant one, and it fires
+    only when it clears BOTH `dominant_stack_min_mentions` (so one passing mention of C# in a
+    Java JD is not evidence) AND `dominant_stack_ratio` times the owner's own mentions (so a
+    genuine Java/Spring JD that also runs a React front end is not penalised for saying so).
+
+    The returned counts are the real ones whether or not the stack fires, so a caller can
+    explain a near miss. Both counts can exceed the number of distinct terms: overlapping
+    vocabulary ("spring boot" also matching "spring") inflates the OWN side, which biases this
+    towards not firing.
+    """
+    w = ctx.w
+    tmult = float(w["dominant_stack_title_mult"])
+
+    def tally(terms) -> float:
+        return float(sum(_count(ctx, low, t) + tmult * _count(ctx, tlow, t) for t in terms))
+
+    own = tally(own_stack(ctx.cfg))
+    best_name, best = None, 0.0
+    for name, terms in foreign_stacks(ctx.cfg).items():
+        n = tally(terms)
+        if n > best:
+            best_name, best = name, n
+    if best_name is None:
+        return None, own, 0.0
+    if best < float(w["dominant_stack_min_mentions"]):
+        return None, own, best
+    if best < float(w["dominant_stack_ratio"]) * max(own, 1.0):
+        return None, own, best
+    return best_name, own, best
 
 
 def geo_bucket(ctx: Ctx, row) -> str:
@@ -741,14 +894,11 @@ def score_one(row, ctx: Ctx) -> Verdict:
                 points += pen
                 clauses.append((20, f"JD asks {_num(yoe)}+ yrs vs {_num(cfg['my_yoe'])}"))
 
-        # 3. Resume overlap, weighted and saturating. The boilerplate tier sums separately and
-        # is capped, so a JD made of AWS service nouns cannot earn the evidenced bonus.
-        hits = matched_skills(ctx, low)
-        strong = sum(wt for _, wt, tier in hits if tier in EVIDENCED_TIERS)
-        boiler = min(sum(wt for _, wt, tier in hits if tier == "boilerplate"),
-                     float(w["boilerplate_cap"]))
-        sat = float(w["overlap_saturate"])
-        bonus = float(w["overlap_max"]) * min(strong + boiler, sat) / sat
+        # 3. Resume overlap, weighted, zone-weighted and saturating. A term under
+        # `Requirements:` outweighs the same term in the preamble, and the boilerplate tier
+        # sums separately and is capped, so a JD made of AWS service nouns cannot earn the
+        # evidenced bonus.
+        bonus, hits = overlap_bonus(ctx, low, zone)
         add("overlap", bonus)
         points += bonus
         named = [t for t, _, tier in hits if tier in EVIDENCED_TIERS][:4]
@@ -777,6 +927,19 @@ def score_one(row, ctx: Ctx) -> Verdict:
             add("off_lane", pen)
             points += pen
             clauses.append((30, "off lane: " + ", ".join(off_named[:3])))
+
+        # 4b. Whose stack is this JD mostly about. Independent of 4 and allowed to stack with
+        # it, which is the intended reading of a "React Developer" title on a React-dominant
+        # JD: the title is off lane AND the work is someone else's stack. Has-JD only -- a
+        # blind row carries no stack evidence to count.
+        stack, own_n, foreign_n = dominant_stack(ctx, tlow, low)
+        if stack:
+            dsat = float(w["dominant_stack_saturate"])
+            pen = max(w["dominant_stack_max"],
+                      w["dominant_stack_max"] * min(foreign_n, dsat) / dsat)
+            add("dominant_stack", pen)
+            points += pen
+            clauses.append((35, f"JD is mostly {stack.replace('_', ' ')}, not this stack"))
 
         # 5. Never-claim terms demanded in the requirements zone. The resume's list outranks
         # the JD, so these can only ever subtract.

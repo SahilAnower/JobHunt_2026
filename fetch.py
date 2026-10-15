@@ -58,6 +58,19 @@ TIMEOUT = 25
 # limiting throughput for no benefit.
 BOARD_WORKERS = 12
 ENRICH_WORKERS = 8
+# How many JD-less reqs one --enrich pass chases, and how many times a single row is retried
+# before it is written off as unrecoverable.
+#
+# The budget was 30, against 290 open blind rows — 267 of them instahyre, whose posting pages
+# are server-rendered and extract cleanly. At 30 a run could not get through the backlog faster
+# than the boards refilled it, so rows reached the scorer blind and a blind score caps out
+# around 6. 120 clears it in a few runs. It is not unbounded because each one is an HTTP
+# request to somebody else's server: eight at a time with a 0.5s per-worker delay, unchanged.
+#
+# Three attempts, because the failures are mostly permanent — a JS-shell careers page returns
+# the same shell tomorrow. Both are overridable from `runtime:` in the profile and from argv.
+ENRICH_LIMIT = 120
+ENRICH_MAX_ATTEMPTS = 3
 MAX_DESC = 6000          # plenty for the scorer; keeps the db small and prompts cheap
 WORKDAY_PAGES = 4        # 20 reqs per page
 WORKDAY_INDIA_PAGES = 12  # once the India facet is applied the whole set fits in a few pages
@@ -962,7 +975,11 @@ def load_seed(companies_filter: set[str] | None = None) -> list[dict]:
 # is worse than feeding it nothing: it looks like information and is not.
 JD_SIGNALS = ("responsibilit", "qualification", "experience", "you will", "requirement",
               "what you", "skills", "about the role", "minimum")
-JD_MIN_CHARS = 700
+# Defined in `store` now, and re-exported under this name because enrichment, the label export
+# and the tests all reach for `fetch.JD_MIN_CHARS`. One number, three readers: the enrichment
+# candidate query, `looks_like_jd`, and the digest's blind-score marker had drifted apart
+# otherwise, and a row can then be "enriched enough" for one and blind for another.
+JD_MIN_CHARS = store.JD_MIN_CHARS
 
 
 def extract_jd(html_text: str) -> str:
@@ -1027,7 +1044,7 @@ def jd_from_api(source: str, url: str, req_id: str, ua: str) -> str:
     return ""
 
 
-def recheck_closed(ua: str, min_score: int, limit: int) -> None:
+def recheck_closed(ua: str, min_score: int, limit: int, db: Path | None = None) -> None:
     """
     Re-probe reqs already written off and reopen the ones still being served.
 
@@ -1045,7 +1062,7 @@ def recheck_closed(ua: str, min_score: int, limit: int) -> None:
     A 2/10 that is still live is noise, so the default only revisits reqs that scored 6+ or were
     never scored at all.
     """
-    with store.connect() as conn:
+    with store.connect(db or store.DB_PATH) as conn:
         rows = conn.execute(
             "SELECT key, company, title, url, score FROM jobs "
             "WHERE still_open = 0 AND status IN ('new','scored') AND url IS NOT NULL "
@@ -1081,25 +1098,94 @@ def recheck_closed(ua: str, min_score: int, limit: int) -> None:
         print(f"\nreopened {back}/{len(rows)}")
 
 
-def enrich(ua: str, limit: int, verbose: bool = False) -> None:
+def note_attempt(conn, key: str, note: str) -> None:
+    """Record one enrichment attempt against a row. Additive, never resets."""
+    conn.execute(
+        "UPDATE jobs SET enrich_attempts = COALESCE(enrich_attempts, 0) + 1, "
+        "enrich_last = ?, enrich_note = ? WHERE key = ?",
+        (store.now(), note, key),
+    )
+
+
+def enrich_context(profile: dict | None):
+    """
+    A scoring context for ranking candidates, or None if the config will not build one.
+
+    The import is function-local on purpose: `engine_heuristic` imports this module, so a
+    module-level import here would be a cycle. By the time anything calls this, `fetch` is
+    fully initialised, so the import is safe.
+
+    Returning None rather than raising is the right failure mode. A profile whose `scoring:`
+    block is malformed should not stop JD recovery — it should only cost the prioritisation,
+    falling back to newest-first, which is what enrichment did before this existed.
+    """
+    if profile is None:
+        return None
+    import engine_heuristic  # noqa: PLC0415 — deliberate, see above
+
+    try:
+        return engine_heuristic.build_context(profile, engine_heuristic._read_master())
+    except engine_heuristic.ConfigError as e:
+        print(f"not ranking enrichment candidates: {e}")
+        return None
+
+
+def enrich_candidates(conn, ctx, limit: int, max_attempts: int = ENRICH_MAX_ATTEMPTS) -> list:
+    """
+    The rows worth spending the enrichment budget on, best first. Pure: no network, no writes.
+
+    Three rules, in order of how much they matter:
+
+    1. **Skip the hopeless.** A row that has already failed `max_attempts` times is dropped.
+       Those are the JS-shell careers pages and the URLs that answer 403 — they cannot
+       succeed, and before the attempt counter existed they came back every morning and ate
+       the budget in front of rows that would have yielded text.
+    2. **Spend the budget where it changes a decision.** Candidates are ordered by what the
+       real scorer makes of them as they stand, highest first. A blind row the heuristic
+       already puts at 6 or 7 is one JD away from the digest's action list; a blind row at 2
+       is not, and reading its JD changes nothing the owner will act on. The scorer is reused
+       rather than re-approximated here, because a second title heuristic would drift from the
+       one that decides the score.
+    3. **Newest first within a score.** The SQL hands rows over in `first_seen DESC` and the
+       sort below is stable, so equally-scored rows keep that order — a req fetched this
+       morning is tried before one from last week.
+
+    `ctx=None` skips rule 2 entirely and leaves the SQL order, which is exactly what
+    enrichment did before prioritisation existed.
+    """
+    rows = conn.execute(
+        "SELECT * FROM jobs "
+        "WHERE still_open = 1 AND url IS NOT NULL "
+        "AND (description IS NULL OR length(description) < ?) "
+        "AND COALESCE(enrich_attempts, 0) < ? "
+        "ORDER BY first_seen DESC",
+        (JD_MIN_CHARS, max_attempts),
+    ).fetchall()
+    if ctx is None:
+        return rows[:limit]
+
+    import engine_heuristic  # noqa: PLC0415 — same cycle rule as enrich_context
+
+    def rank(r):
+        try:
+            return -engine_heuristic.score_one(r, ctx).score
+        except Exception:  # noqa: BLE001
+            # One unscoreable row must not cost the whole ordering. It sorts last.
+            return 1
+
+    return sorted(rows, key=rank)[:limit]
+
+
+def enrich(ua: str, limit: int, profile: dict | None = None, verbose: bool = False,
+           db: Path | None = None, max_attempts: int = ENRICH_MAX_ATTEMPTS) -> None:
     """Fetch the posting page for stored jobs that have no JD text, and keep what parses."""
-    with store.connect() as conn:
-        # Newest first, and that ordering is the whole point. Without it SQLite returns rowid
-        # order, so the oldest reqs are tried every run — and the oldest are precisely the ones
-        # that can never succeed: the JS-shell careers pages at Meta, Microsoft and Apple, plus
-        # URLs that 404. They consumed the entire budget while reqs fetched minutes earlier
-        # waited, which is how all seven NetApp reqs reached the scorer with no JD text and were
-        # judged on their titles alone.
-        rows = conn.execute(
-            "SELECT key, company, title, url, source, req_id FROM jobs "
-            "WHERE still_open = 1 AND url IS NOT NULL "
-            "AND (description IS NULL OR length(description) < ?) "
-            "ORDER BY first_seen DESC LIMIT ?",
-            (JD_MIN_CHARS, limit),
-        ).fetchall()
+    with store.connect(db or store.DB_PATH) as conn:
+        ctx = enrich_context(profile)
+        rows = enrich_candidates(conn, ctx, limit, max_attempts)
 
         print(f"\nenriching {len(rows)} job(s) with no JD text, "
-              f"{ENRICH_WORKERS} at a time")
+              f"{ENRICH_WORKERS} at a time"
+              + ("" if ctx is not None else " (unranked: the scoring config did not load)"))
 
         # Each req is a separate request to a separate host, so these overlap cleanly. This
         # used to be one request at a time with a 0.5s sleep between them, which on a
@@ -1124,6 +1210,9 @@ def enrich(ua: str, limit: int, verbose: bool = False) -> None:
 
         got = 0
         for r, text, err in results:
+            # Every branch below records the attempt, which is what makes enrichment durable
+            # across runs: an unrecoverable row reaches `max_attempts` and drops out of the
+            # candidate set for good instead of being re-fetched every morning forever.
             if err is not None:
                 if isinstance(err, urllib.error.HTTPError):
                     # 404 and 410 on a posting URL are not fetch failures, they are the answer:
@@ -1136,11 +1225,14 @@ def enrich(ua: str, limit: int, verbose: bool = False) -> None:
                             (f"posting URL returned HTTP {err.code} on {store.now()[:10]}, "
                              "req appears closed", r["key"]),
                         )
+                        note_attempt(conn, r["key"], f"HTTP {err.code}, req closed")
                         print(f"  {r['company']:<14} HTTP {err.code} — marked closed")
                     else:
+                        note_attempt(conn, r["key"], f"HTTP {err.code}, blocked")
                         print(f"  {r['company']:<14} HTTP {err.code} "
                               f"(blocked, req status unknown)")
                 else:
+                    note_attempt(conn, r["key"], type(err).__name__)
                     print(f"  {r['company']:<14} {type(err).__name__}")
                 continue
 
@@ -1148,12 +1240,24 @@ def enrich(ua: str, limit: int, verbose: bool = False) -> None:
                 conn.execute(
                     "UPDATE jobs SET description = ? WHERE key = ?", (text[:MAX_DESC], r["key"])
                 )
+                # The row leaves the candidate set because it now has text, so the attempt
+                # counter it carries is history rather than a limit it will ever hit.
+                note_attempt(conn, r["key"], f"recovered {len(text)} chars")
                 got += 1
                 print(f"  {r['company']:<14} {len(text):>6} chars  {r['title'][:38]}")
             else:
+                note_attempt(conn, r["key"], f"no JD, page was {len(text)} chars")
                 print(f"  {r['company']:<14} {'no JD':>6}        "
                       f"{r['title'][:38]}  (page is {len(text)} chars, likely a JS shell)")
         print(f"recovered JD text for {got}/{len(rows)}")
+        stuck = conn.execute(
+            "SELECT COUNT(*) c FROM jobs WHERE still_open = 1 AND url IS NOT NULL "
+            "AND (description IS NULL OR length(description) < ?) "
+            "AND COALESCE(enrich_attempts, 0) >= ?", (JD_MIN_CHARS, max_attempts),
+        ).fetchone()["c"]
+        if stuck:
+            print(f"{stuck} blind row(s) have reached {max_attempts} failed attempts and are "
+                  f"no longer chased. Raise --enrich-max-attempts to try them again.")
 
 
 # ------------------------------------------------------------------------------- main
@@ -1180,8 +1284,16 @@ def main() -> int:
     ap.add_argument("--enrich", action="store_true",
                     help="fetch posting pages for stored jobs missing JD text")
     ap.add_argument("--enrich-only", action="store_true")
-    ap.add_argument("--enrich-limit", type=int, default=30,
-                    help="how many JD-less reqs to chase per run (default: %(default)s)")
+    ap.add_argument("--enrich-limit", type=int, default=None,
+                    help=f"how many JD-less reqs to chase per run. Defaults to "
+                         f"runtime.enrich_limit in the profile, or {ENRICH_LIMIT}")
+    ap.add_argument("--enrich-max-attempts", type=int, default=None,
+                    help=f"stop chasing a row after this many failed attempts. Defaults to "
+                         f"runtime.enrich_max_attempts in the profile, or "
+                         f"{ENRICH_MAX_ATTEMPTS}")
+    ap.add_argument("--db", type=Path, default=None,
+                    help="write to this database instead of jobhunt.db. For exercising "
+                         "enrichment against a copy.")
     ap.add_argument("--no-verify-closure", action="store_true",
                     help="skip the HTTP check on reqs about to be closed, and let the "
                          "consecutive-miss counter decide alone")
@@ -1200,12 +1312,21 @@ def main() -> int:
     excluded = {c.lower() for c in (profile.get("exclusions", {}).get("companies") or [])}
     only = {c for c in (args.company or [])} or None
 
+    # argv wins, then the profile, then the constant. Both knobs live in `runtime:` so the
+    # owner can change the budget without editing a command line they run from cron.
+    rt = jobprofile.runtime(profile)
+    enrich_limit = (args.enrich_limit if args.enrich_limit is not None
+                    else rt.get("enrich_limit", ENRICH_LIMIT))
+    enrich_max_attempts = (args.enrich_max_attempts if args.enrich_max_attempts is not None
+                           else rt.get("enrich_max_attempts", ENRICH_MAX_ATTEMPTS))
+
     if args.enrich_only:
-        enrich(ua, args.enrich_limit)
+        enrich(ua, enrich_limit, profile, db=args.db, max_attempts=enrich_max_attempts)
         return 0
 
     if args.recheck_closed:
-        recheck_closed(ua, args.recheck_min_score, args.recheck_limit)
+        recheck_closed(ua, args.recheck_min_score, args.recheck_limit,
+                       db=args.db)
         return 0
 
     postings: list[dict] = []
@@ -1271,7 +1392,7 @@ def main() -> int:
         print("\n(dry run — nothing written)")
         return 0
 
-    with store.connect() as conn:
+    with store.connect(args.db or store.DB_PATH) as conn:
         new = sum(store.upsert_job(conn, p) for p in kept)
         # Closure is decided on everything the boards returned, not on what survived the gates.
         # Keyed on `kept`, tightening a title rule would mark a perfectly live req as closed —
@@ -1298,7 +1419,7 @@ def main() -> int:
           f"{pending} absent but kept open")
 
     if args.enrich:
-        enrich(ua, args.enrich_limit)
+        enrich(ua, enrich_limit, profile, db=args.db, max_attempts=enrich_max_attempts)
     return 0
 
 

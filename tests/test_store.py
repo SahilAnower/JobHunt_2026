@@ -210,3 +210,264 @@ def test_already_closed_rows_are_ignored(conn):
     assert row(conn, key)["still_open"] == 0
     # A closed req is not reconsidered every run; that is what --recheck-closed is for.
     assert store.mark_closed(conn, "greenhouse", set(), verify=None) == (0, 0)
+
+
+# --- set_score and the label columns
+#
+# `label_score` is where Claude's judgement goes to survive a rescore, and `scored_by` is how a
+# mixed database stays readable. The property that matters most is the one in
+# test_a_heuristic_score_is_never_promoted_to_a_label: a heuristic score is a pure function of
+# the row, so treating it as ground truth would let a second rescore launder the first one's
+# output into the labels, and calibrate.py would then measure the heuristic against itself.
+
+def test_set_score_records_the_engine(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "good fit", scored_by="claude")
+    assert row(conn, key)["scored_by"] == "claude"
+
+
+def test_set_score_without_an_engine_leaves_the_old_one(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "good fit", scored_by="claude")
+    store.set_score(conn, key, 4, "on reflection")
+    r = row(conn, key)
+    assert r["score"] == 4
+    assert r["scored_by"] == "claude", "a caller that does not know must not erase it"
+
+
+def test_a_score_starts_with_no_label(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "good fit", scored_by="claude")
+    assert row(conn, key)["label_score"] is None
+    assert store.unprotected_scores(conn) == 1
+
+
+def test_protect_labels_copies_the_score_and_the_reason(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "good fit", scored_by="claude")
+    assert store.protect_labels(conn) == 1
+    r = row(conn, key)
+    assert (r["label_score"], r["label_reason"]) == (7, "good fit")
+    assert store.unprotected_scores(conn) == 0
+
+
+def test_protect_labels_does_not_touch_an_existing_label(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "claude said so", scored_by="claude")
+    store.protect_labels(conn)
+    store.set_score(conn, key, 4, "heuristic said so", scored_by="heuristic")
+    assert store.protect_labels(conn) == 0
+    r = row(conn, key)
+    assert (r["label_score"], r["label_reason"]) == (7, "claude said so")
+
+
+def test_a_heuristic_score_is_never_promoted_to_a_label(conn):
+    key = seed(conn, "1")
+    store.set_score(conn, key, 4, "matched java, aws", scored_by="heuristic")
+    assert store.protect_labels(conn) == 0
+    assert row(conn, key)["label_score"] is None
+    assert store.unprotected_scores(conn) == 0
+
+
+def test_a_score_from_before_the_column_existed_counts_as_a_label(conn):
+    """NULL scored_by is the claude era, which is every row in the current corpus."""
+    key = seed(conn, "1")
+    store.set_score(conn, key, 7, "good fit")
+    assert store.unprotected_scores(conn) == 1
+    assert store.protect_labels(conn) == 1
+    assert row(conn, key)["label_score"] == 7
+
+
+def test_an_unscored_row_is_not_protected(conn):
+    seed(conn, "1")
+    assert store.protect_labels(conn) == 0
+    assert store.unprotected_scores(conn) == 0
+
+
+# ---------------------------------------------------------------- confidence in the ordering
+
+JD = ("Requirements: 3 years of experience building backend services in java and spring "
+      "boot on aws. You will own microservices end to end, work with kafka and dynamodb, "
+      "and help with system design reviews. " * 6)
+
+
+def seed_at(conn, company, req_id, score, description=None, title="Software Engineer II"):
+    """One scored, still-open, un-actioned req at a named company. Returns its key."""
+    job = {"company": company, "title": title, "req_id": req_id,
+           "url": f"https://example.test/{company}/{req_id}", "source": "greenhouse",
+           "description": description}
+    store.upsert_job(conn, job)
+    key = store.job_key(company, title, job["url"], req_id)
+    store.set_score(conn, key, score, "reason", scored_by="claude")
+    return key
+
+
+def test_a_sighted_req_outranks_an_equally_scored_blind_one(conn):
+    """
+    The ordering item 6 exists for. Both score 8, so before this the tie broke on company and
+    the blind row won on alphabet alone. "Zeta" is deliberately last alphabetically: if the
+    sighted row still comes first, the JD flag is what ordered them and not the name.
+    """
+    assert len(JD) >= 1200
+    blind = seed_at(conn, "Acme", "1", 8)
+    sighted = seed_at(conn, "Zeta", "2", 8, description=JD)
+
+    rows = store.promoted(conn, 7)
+    assert [r["key"] for r in rows] == [sighted, blind]
+
+
+def test_the_jd_flag_does_not_outrank_the_score(conn):
+    """Score is still the primary key of the ordering; confidence only breaks its ties."""
+    low_sighted = seed_at(conn, "Acme", "1", 7, description=JD)
+    high_blind = seed_at(conn, "Zeta", "2", 9)
+    assert [r["key"] for r in store.promoted(conn, 7)] == [high_blind, low_sighted]
+
+
+def test_company_still_breaks_the_remaining_tie(conn):
+    """Determinism. Two rows alike on score and on confidence must still order stably."""
+    a = seed_at(conn, "Acme", "1", 8, description=JD)
+    z = seed_at(conn, "Zeta", "2", 8, description=JD)
+    assert [r["key"] for r in store.promoted(conn, 7)] == [a, z]
+
+
+def test_promoted_exposes_the_has_jd_flag(conn):
+    seed_at(conn, "Acme", "1", 8, description=JD)
+    seed_at(conn, "Zeta", "2", 8)
+    rows = store.promoted(conn, 7)
+    assert [bool(r["has_jd"]) for r in rows] == [True, False]
+
+
+def test_a_description_below_the_minimum_counts_as_blind(conn):
+    """
+    The 700-char rule, which is the whole point of JD_MIN_CHARS living in one place. A
+    JavaScript-shell careers page yields a few hundred characters of nav and a cookie banner;
+    treating that as a JD is worse than treating it as nothing, because it looks like evidence.
+    """
+    shell = "x" * (store.JD_MIN_CHARS - 1)
+    seed_at(conn, "Acme", "1", 8, description=shell)
+    assert bool(store.promoted(conn, 7)[0]["has_jd"]) is False
+    assert store.has_jd({"description": shell}) is False
+    assert store.has_jd({"description": "x" * store.JD_MIN_CHARS}) is True
+
+
+def test_has_jd_reads_the_flag_when_the_row_carries_one(conn):
+    seed_at(conn, "Acme", "1", 8, description=JD)
+    assert store.has_jd(store.promoted(conn, 7)[0]) is True
+
+
+def test_has_jd_falls_back_to_the_description_on_a_row_from_another_query(conn):
+    # digest.py renders rows from three different queries, only one of which is promoted().
+    key = seed_at(conn, "Acme", "1", 8, description=JD)
+    plain = conn.execute("SELECT * FROM jobs WHERE key = ?", (key,)).fetchone()
+    with pytest.raises((IndexError, KeyError)):
+        plain["has_jd"]
+    assert store.has_jd(plain) is True
+
+
+def test_has_jd_treats_a_missing_description_as_blind(conn):
+    assert store.has_jd({}) is False
+    assert store.has_jd({"description": None}) is False
+
+
+def test_fetch_reads_the_same_jd_minimum_as_the_store(conn):
+    # One number, several readers. If these drift, a row can be "enriched enough" for the
+    # candidate query and still blind to the digest.
+    import fetch
+    assert fetch.JD_MIN_CHARS == store.JD_MIN_CHARS == 700
+
+
+def test_promoted_still_filters_on_the_threshold_and_the_status(conn):
+    """The ordering changed; the filters did not. This is the guard on that."""
+    keep = seed_at(conn, "Acme", "1", 7, description=JD)
+    seed_at(conn, "Acme", "2", 6, description=JD)                 # below the bar
+    acted = seed_at(conn, "Acme", "3", 9, description=JD)
+    conn.execute("UPDATE jobs SET status = 'applied' WHERE key = ?", (acted,))
+    closed = seed_at(conn, "Acme", "4", 9, description=JD)
+    conn.execute("UPDATE jobs SET still_open = 0 WHERE key = ?", (closed,))
+    assert [r["key"] for r in store.promoted(conn, 7)] == [keep]
+
+
+# ------------------------------------------------------------------- per-company cap
+
+def rows_for(*companies):
+    """Plain dicts, because cap_per_company only ever reads `company`."""
+    return [{"company": c, "score": 9 - i} for i, c in enumerate(companies)]
+
+
+def test_five_reqs_at_one_company_keep_two_and_defer_three():
+    rows = rows_for("Acme", "Acme", "Acme", "Acme", "Acme")
+    kept, over = store.cap_per_company(rows, 2)
+    assert len(kept) == 2
+    assert len(over) == 3
+    # Nothing invented and nothing lost: the two halves reconstruct the input exactly.
+    assert kept + over == rows
+
+
+def test_the_cap_preserves_the_incoming_score_order_in_both_halves():
+    # promoted() hands rows over already ordered by score, so the split must not re-sort.
+    rows = rows_for("Acme", "Acme", "Acme", "Acme")
+    kept, over = store.cap_per_company(rows, 2)
+    assert [r["score"] for r in kept] == [9, 8]
+    assert [r["score"] for r in over] == [7, 6]
+
+
+def test_the_cap_counts_per_company_not_overall():
+    rows = rows_for("Acme", "Bosch", "Acme", "Bosch", "Acme")
+    kept, over = store.cap_per_company(rows, 2)
+    assert [r["company"] for r in kept] == ["Acme", "Bosch", "Acme", "Bosch"]
+    assert [r["company"] for r in over] == ["Acme"]
+
+
+def test_a_company_under_the_cap_is_untouched():
+    rows = rows_for("Acme", "Bosch", "Citrine")
+    kept, over = store.cap_per_company(rows, 2)
+    assert kept == rows
+    assert over == []
+
+
+def test_the_cap_groups_companies_case_and_space_insensitively():
+    # The same employer arrives spelled differently from different boards, and a cap that
+    # counted "Acme" and "acme " separately would not be a cap at all.
+    rows = rows_for("Acme", "acme", " ACME ")
+    kept, over = store.cap_per_company(rows, 2)
+    assert len(kept) == 2 and len(over) == 1
+
+
+def test_a_cap_of_zero_means_no_cap_rather_than_an_empty_list():
+    """
+    A config typo must not blank the action list. Reading 0 literally would put every promoted
+    req into the overflow block, which looks like the pipeline broke.
+    """
+    rows = rows_for("Acme", "Acme", "Acme")
+    kept, over = store.cap_per_company(rows, 0)
+    assert kept == rows and over == []
+    assert store.cap_per_company(rows, -1) == (rows, [])
+
+
+def test_the_cap_defaults_to_two():
+    rows = rows_for("Acme", "Acme", "Acme")
+    assert store.cap_per_company(rows) == store.cap_per_company(rows, 2)
+    assert store.COMPANY_CAP == 2
+
+
+def test_the_cap_handles_an_empty_input_and_a_missing_company():
+    assert store.cap_per_company([], 2) == ([], [])
+    kept, over = store.cap_per_company([{"company": None}, {"company": None},
+                                        {"company": None}], 2)
+    assert len(kept) == 2 and len(over) == 1
+
+
+def test_the_cap_does_not_mutate_the_list_it_is_given():
+    rows = rows_for("Acme", "Acme", "Acme")
+    before = list(rows)
+    store.cap_per_company(rows, 2)
+    assert rows == before
+
+
+def test_the_cap_applied_to_promoted_keeps_the_highest_scoring_two(conn):
+    """End to end: the ordering promoted() establishes is the priority the cap respects."""
+    for i, score in enumerate([7, 9, 8, 7]):
+        seed_at(conn, "Acme", str(i), score, description=JD)
+    kept, over = store.cap_per_company(store.promoted(conn, 7), 2)
+    assert [r["score"] for r in kept] == [9, 8]
+    assert [r["score"] for r in over] == [7, 7]

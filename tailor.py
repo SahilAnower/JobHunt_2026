@@ -202,6 +202,8 @@ def main() -> int:
     ap.add_argument("--retailor", action="store_true", help="overwrite an existing file")
     ap.add_argument("--include-instahyre", action="store_true",
                     help="tailor aggregator reqs too, which mostly have no JD text")
+    ap.add_argument("--db", type=Path, default=None,
+                    help="tailor against this database instead of jobhunt.db")
     ap.add_argument("--engine", choices=engine.VALID,
                     help="override runtime.engine for this run")
     args = ap.parse_args()
@@ -221,7 +223,7 @@ def main() -> int:
         print(e)
         return 1
 
-    with store.connect() as conn:
+    with store.connect(args.db or store.DB_PATH) as conn:
         if args.key:
             marks = ",".join("?" * len(args.key))
             rows = conn.execute(f"SELECT * FROM jobs WHERE key IN ({marks})", args.key).fetchall()

@@ -43,9 +43,29 @@ def link(job) -> str:
     return f"[{title}]({job['url']})" if job["url"] else title
 
 
+# What a score is worth depends on what the scorer could read. 302 of 918 scored reqs have no
+# JD, and those were scored on a title, a company and a city — the heuristic's no-JD path caps
+# out around 6 and leans almost entirely on the title reading in band. A 7 from that path and a
+# 7 read off a full JD are not the same claim, so the digest says which is which rather than
+# presenting both as one number. `store.promoted` already ranks the sighted ones first.
+NO_JD_CELL = " · no JD"
+NO_JD_BULLET = " _(scored without a JD)_"
+
+
+def jd_cell(job) -> str:
+    """The marker for a table cell, empty when the scorer had a JD to read."""
+    return "" if store.has_jd(job) else NO_JD_CELL
+
+
+def jd_bullet(job) -> str:
+    """The marker for a bullet line, empty when the scorer had a JD to read."""
+    return "" if store.has_jd(job) else NO_JD_BULLET
+
+
 def build(conn, profile: dict) -> str:
     rt = jobprofile.runtime(profile)
     threshold = rt.get("score_threshold", 7)
+    cap = rt.get("company_cap", store.COMPANY_CAP)
     today = date.today().isoformat()
     L: list[str] = [f"# jobhunt digest — {today}", ""]
 
@@ -57,8 +77,18 @@ def build(conn, profile: dict) -> str:
         ).fetchall()
     }
 
+    # The per-company cap, applied to the two action sections SEPARATELY rather than to
+    # `promoted` as a whole. Section 1 holds reqs whose draft is already written and sitting in
+    # outbox/; burying one of those in a collapsed block because the same company also has two
+    # fresh reqs would be the one way this feature could cost the owner something real — an
+    # ask that was ready to send and never went. So a drafted req competes only with other
+    # drafted reqs for its slots, and a fresh one only with other fresh ones.
+    #
+    # Nothing is dropped either way. Both overflows are rendered below section 2.
+
     # 1. ready to send
-    ready = [j for j in promoted if j["key"] in drafted]
+    ready, ready_over = store.cap_per_company(
+        [j for j in promoted if j["key"] in drafted], cap)
     L += ["## Do today", ""]
     if ready:
         L.append("A draft is written and waiting. Read it, fix anything that is not your")
@@ -67,7 +97,8 @@ def build(conn, profile: dict) -> str:
         for j in ready:
             d = drafted[j["key"]]
             L += [
-                f"- **{j['company']} — {link(j)}** · {j['score']}/10 · {j['geo'] or '?'}",
+                f"- **{j['company']} — {link(j)}** · {j['score']}/10 · "
+                f"{j['geo'] or '?'}{jd_cell(j)}",
                 f"  - draft: `{d['draft_path']}`",
                 f"  - warm path: {j['human_path'] or 'cold, find a human first'}",
             ]
@@ -77,7 +108,8 @@ def build(conn, profile: dict) -> str:
     L.append("")
 
     # 2. new and scored
-    fresh = [j for j in promoted if j["key"] not in drafted]
+    fresh, fresh_over = store.cap_per_company(
+        [j for j in promoted if j["key"] not in drafted], cap)
     L += [f"## Scored {threshold}+ and not yet acted on ({len(fresh)})", ""]
     if fresh:
         L.append("| Score | Company | Role | Where | Lane | Time to offer |")
@@ -85,14 +117,29 @@ def build(conn, profile: dict) -> str:
         for j in fresh:
             L.append(
                 f"| {j['score']} | {j['company']} | {link(j)} | "
-                f"{j['geo'] or '?'} | {j['lane'] or '?'} | {j['speed_note'] or ''} |"
+                f"{j['geo'] or '?'}{jd_cell(j)} | {j['lane'] or '?'} | "
+                f"{j['speed_note'] or ''} |"
             )
         L.append("")
         for j in fresh:
-            L.append(f"- **{j['company']} — {j['title']}**: {j['score_reason'] or ''}")
+            L.append(f"- **{j['company']} — {j['title']}**: "
+                     f"{j['score_reason'] or ''}{jd_bullet(j)}")
     else:
         L.append("_Nothing new above the bar._")
     L.append("")
+
+    # 2b. what the cap deferred. Collapsed, because the point of the cap is that these are not
+    # today's work — but present, because they are open reqs that cleared the bar and a digest
+    # that silently dropped them would be lying about the state of the search.
+    deferred = ready_over + fresh_over
+    if deferred:
+        L += [f"<details><summary>More open reqs at companies already in today's list "
+              f"({len(deferred)})</summary>", "",
+              f"At most {cap} req(s) per company reach the lists above, so these are deferred "
+              f"rather than dropped.", ""]
+        for j in deferred:
+            L.append(f"- {j['score']}/10 {j['company']} — {link(j)}{jd_bullet(j)}")
+        L += ["", "</details>", ""]
 
     # 3. in motion
     live = store.active(conn)
@@ -146,7 +193,8 @@ def build(conn, profile: dict) -> str:
     if low_total:
         L += [f"<details><summary>Below the bar ({low_total}) — check the scorer</summary>", ""]
         for j in low:
-            L.append(f"- {j['score']}/10 {j['company']} — {j['title']}: {j['score_reason'] or ''}")
+            L.append(f"- {j['score']}/10 {j['company']} — {j['title']}: "
+                     f"{j['score_reason'] or ''}{jd_bullet(j)}")
         L += ["", "</details>", ""]
 
     # 6. the read
@@ -216,10 +264,12 @@ def build(conn, profile: dict) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stdout", action="store_true")
+    ap.add_argument("--db", type=Path, default=None,
+                    help="build the digest from this database instead of jobhunt.db")
     args = ap.parse_args()
 
     profile = jobprofile.load()
-    with store.connect() as conn:
+    with store.connect(args.db or store.DB_PATH) as conn:
         text = build(conn, profile)
         store.log_run(conn, "digest")
 

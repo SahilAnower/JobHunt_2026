@@ -152,14 +152,43 @@ python3 fetch.py --seed --enrich          # poll boards, reload seed reqs, recov
 python3 fetch.py --company Adobe          # one board only
 python3 fetch.py --enrich-only            # just chase JD text for reqs missing it
 python3 score.py                          # score everything unscored
-python3 score.py --rescore --limit 20     # re-judge after editing the profile
 python3 draft.py --min-score 8            # drafts only for the strongest
 python3 digest.py --stdout                # print today's digest instead of writing it
 ```
 
+### Re-scoring, and why it is gated
+
 If you edit `profile.yaml` in a way that changes the bar — a new `exclude_titles` entry, a
-different `floor_lpa`, a rewritten `situation` — run `python3 score.py --rescore` so the
-existing pipeline is judged by the new rules.
+different `floor_lpa`, a rewritten `situation` — the existing pipeline is still judged by the
+old rules until you re-score it. `--rescore` does that, and it is the one destructive thing in
+this project: `jobs.score` holds the judgement already spent on those reqs, and a rescore
+overwrites exactly those cells. On a database scored by `claude`, that judgement cost a
+subscription call per req and cannot be re-derived.
+
+So two things must be true before it will start, and it refuses loudly if either is not:
+
+1. **The labels are exported.** `calibration/claude-labels.json` must exist and cover every row
+   whose score has no `label_score` behind it. Make it once, before any of this:
+   `python3 calibration_labels.py --export` (read-only, takes a second).
+2. **There is a backup.** Either `--backup PATH`, which takes a consistent one itself before
+   the first write and refuses a path inside the repository, or `--i-have-a-backup`, which puts
+   the claim on the record.
+
+```bash
+python3 calibration_labels.py --export
+python3 score.py --rescore --backup ~/jobhunt-pre-rescore.db
+```
+
+A permitted rescore copies `score`/`score_reason` into `label_score`/`label_reason` for every
+row holding judgement that cannot be re-derived, so the labels survive inside the database too,
+and records which engine wrote each new score in `scored_by`. A heuristic score never becomes a
+label: it is a pure function of the row, so a later rescore reproduces it, and treating it as
+ground truth would have `calibrate.py` measuring the heuristic against itself.
+
+`--rescore` covers **every still-open req** unless you pass `--limit`. It used to inherit
+`--limit`'s default of 100 and silently re-judge the top hundred by score, which is the worst
+possible subset: the top of the database ends up on one scale and the rest on another, and
+nothing says which row is which.
 
 ### Choosing an engine
 
@@ -219,16 +248,37 @@ value, so this table cannot drift out of date without the help text drifting too
 
 | Stage | Flag | Default | What it caps |
 |---|---|---|---|
-| `fetch.py --enrich` | `--enrich-limit` | 30 | posting pages fetched for missing JD text |
+| `fetch.py --enrich` | `--enrich-limit` | `runtime.enrich_limit` (120) | posting pages fetched for missing JD text |
+| `fetch.py --enrich` | `--enrich-max-attempts` | `runtime.enrich_max_attempts` (3) | failed attempts before a row is left alone |
 | `fetch.py --recheck-closed` | `--recheck-limit` | 60 | closed reqs re-probed |
 | `fetch.py --recheck-closed` | `--recheck-min-score` | 6 | score floor for re-probing (unscored always included) |
-| `score.py` | `--limit` | 100 | reqs scored |
+| `score.py` | `--limit` | 100, or every still-open req with `--rescore` | reqs scored |
 | `score.py` | `--batch` | `runtime.max_score_batch` (12) | reqs per scoring call (`claude` engine only) |
 | `draft.py` | `--limit` | 6 | drafts written |
+| `draft.py` | `--no-company-cap` | `runtime.company_cap` (2) | reqs per company drafted in one run |
 | `tailor.py` | `--limit` | 6 | resumes tailored |
 
 `draft.py` and `tailor.py` sit at 6 because you have to read every result by hand, which is
 true of both engines. `score.py` sits at 100 because twelve reqs share one call.
+
+### The per-company cap
+
+`runtime.company_cap` (default 2) bounds how many reqs from one employer reach the digest's two
+action lists and a `draft.py` run at once. The boards are lumpy in a way score ordering makes
+worse: JP Morgan Chase alone holds 54 open un-actioned reqs, Bosch 29 and Mastercard 21, so a
+list ordered by score is mostly one company and six drafts in a morning all go to it. 39 of 132
+applications so far went to JPMC — 30% of the search in one employer, which is a worse bet than
+the same effort across three.
+
+**Nothing is dropped.** Reqs over the cap appear in a collapsed *"More open reqs at companies
+already in today's list"* block in the digest, and a later run drafts them. The cap orders
+attention; it does not filter. `digest.py`'s "req(s) above the bar" count still counts all of
+them.
+
+Drafted reqs and fresh reqs are capped separately, so a draft already sitting in `outbox/`
+cannot be pushed out of "Do today" by two fresh reqs at the same company. `draft.py --key`
+ignores the cap, because naming a key is an instruction about one req. `--no-company-cap`
+ignores it for one run, and `company_cap: 0` turns it off entirely.
 
 Two related knobs *are* profile keys, under `runtime:`, because they tune every run and depend
 on the machine rather than on the day: `max_score_batch` (reqs per scoring call) and
@@ -445,6 +495,22 @@ endpoints return no description at all, and a req scored blind caps out around 6
 else falls back to fetching the posting page, which works on server-rendered pages and fails on
 the JS ones. A `404` or `410` there is not a failure — the req is gone, and it gets marked
 closed.
+
+Which rows get the budget is a decision, not an accident. Candidates are ordered by what the
+heuristic scorer makes of them as they stand, so a blind req it already puts at 6 or 7 — one JD
+away from the action list — is read before a blind req at 2, whose JD would change nothing the
+owner acts on. Within the same score, newest first.
+
+Every attempt is recorded (`enrich_attempts`, `enrich_last`, `enrich_note`), and after
+`runtime.enrich_max_attempts` failures a row is left alone. That is what makes the budget
+worth raising: the JS-shell careers pages and the URLs answering `403` used to come back every
+single run and spend it in front of rows that would have yielded text. Raise
+`--enrich-max-attempts` to give written-off rows another go.
+
+Enrichment only ever re-fetches a URL already in the database, so it reaches the same boards
+`fetch.py` already polls. Instahyre's `robots.txt` is `User-agent: *` with no `Disallow`, which
+is why its postings are fetched; Naukri, Cutshort and Wellfound disallow their job paths and are
+deliberately not polled and not enriched.
 
 ## Honest limitations
 
