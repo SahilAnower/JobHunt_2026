@@ -60,6 +60,9 @@ def main() -> int:
     ap.add_argument("--only", action="append", choices=[s[0] for s in STAGES])
     ap.add_argument("--engine", choices=engine.VALID,
                     help="override runtime.engine for every stage in this run")
+    ap.add_argument("--db", type=Path, default=None,
+                    help="run every stage against this database instead of jobhunt.db. "
+                         "For exercising a full pass on a copy without touching the real one.")
     args = ap.parse_args()
 
     stages = [s for s in STAGES
@@ -67,6 +70,12 @@ def main() -> int:
               and not (args.no_tailor and s[0] == "tailor")]
     if args.only:
         stages = [s for s in stages if s[0] in args.only]
+    # Every stage takes --db itself, so the choice has to travel with each command rather than
+    # being resolved once here. This is how a full pipeline pass can be exercised against a
+    # copy — which is the only safe way to do it, since the live file holds 918 Claude labels
+    # and every tracked application.
+    if args.db:
+        stages = [(n, c + ["--db", str(args.db)], w) for n, c, w in stages]
 
     try:
         engine_name = engine.resolve(jobprofile.runtime(jobprofile.load()), args.engine)

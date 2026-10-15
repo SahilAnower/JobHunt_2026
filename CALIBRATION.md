@@ -197,6 +197,56 @@ The harness is also usable as a one-off: `--sweep-budget` and `--sweep-passes` b
 and it never writes a config file — it prints a YAML fragment to paste by hand, deliberately,
 so that applying a sweep result is always a decision somebody made.
 
+## Zero Claude invocations on the heuristic engine, verified by execution
+
+`engine: heuristic` is supposed to shell out to nothing. Reading the code does not prove that —
+any stage could reach `claudecall` by a path the reader did not follow, and a `claude` binary
+that is simply absent from PATH proves nothing either, because a stage that tried and failed
+could swallow the error. The check below settles it by execution. It is a manual one: it needs a
+PATH shim and a database copy, neither of which belongs in pytest.
+
+```bash
+mkdir -p /tmp/shadow
+cat > /tmp/shadow/claude <<'SH'
+#!/bin/sh
+echo "$(date +%H:%M:%S) claude invoked with: $@" >> /tmp/shadow/calls.log
+exit 97
+SH
+chmod +x /tmp/shadow/claude
+rm -f /tmp/shadow/calls.log
+
+# Confirm the trap itself works before trusting its silence.
+PATH=/tmp/shadow:$PATH claude -p test ; cat /tmp/shadow/calls.log ; rm -f /tmp/shadow/calls.log
+
+cp jobhunt.db /tmp/cal-7.db
+PATH=/tmp/shadow:$PATH python3 run.py --engine heuristic --db /tmp/cal-7.db
+```
+
+**Pass condition: every stage reports `ok`, and `/tmp/shadow/calls.log` does not exist.** The
+shadow exits 97 rather than 0 on purpose — anything that called it fails loudly instead of
+absorbing the error, and the log file appears either way.
+
+Self-testing the shim first is not ceremony. A silent `calls.log` is only evidence if the shim
+would have written one, and a typo in the heredoc or a missing `chmod +x` produces exactly the
+same silence as a clean run.
+
+Last run, on all five stages against a copy:
+
+| stage | result | work actually done |
+|---|---|---|
+| fetch | ok, 354s | polled the boards, seeded, enriched |
+| score | ok | **38 reqs scored** through the heuristic engine, in 1 batch |
+| draft | ok | **6 drafts written**, 4 reqs held back by the per-company cap |
+| tailor | ok | **6 resumes tailored** |
+| digest | ok | wrote `digest/2026-10-15.md` |
+
+`calls.log` was not created. The work matters as much as the exit codes: a score stage with
+nothing to score never reaches an engine at all, so a 0-row pass would prove nothing. 38 reqs
+went through `score_one` and 12 generated files were written without `claude` being invoked once.
+
+`run.py --db PATH` passes the path to every stage, which is what makes a full-pipeline check
+possible without touching the live database.
+
 ## The two round-3 review findings
 
 ### HIGH-2: fourteen skill terms with no resume evidence
