@@ -50,6 +50,9 @@ import engine_heuristic as eh
 import jobprofile
 
 ROOT = Path(__file__).resolve().parent
+# Kept for reference and for the test that monkeypatches it; the refusal below matches on the
+# FILENAME rather than on this path, because in a worktree this path does not exist and the
+# comparison silently never fired. See the comment at the refusal.
 LIVE_DB = ROOT / "jobhunt.db"
 LABELS = calibration_labels.LABELS
 
@@ -436,11 +439,21 @@ def main(argv: list[str] | None = None) -> int:
                     help="coordinate-ascent passes (default: %(default)s)")
     args = ap.parse_args(argv)
 
-    if args.db.resolve() == LIVE_DB.resolve():
-        # 806 rows of labels that cannot be regenerated without spending the owner's Claude
-        # access on all of them again.
-        sys.exit(f"refusing to read {LIVE_DB}: copy it first. The stored scores are the only "
-                 f"ground truth this project has and --rescore would destroy them.")
+    # Refused by FILENAME, not by resolved path. The resolved-path check alone was ineffective
+    # from a git worktree, which is where this work actually happens: ROOT/"jobhunt.db" does not
+    # exist in a worktree, so comparing against it never matched the real file one directory up,
+    # and `--db ../../jobhunt.db` sailed through a guard the docs said was closed. The live DB is
+    # reachable as a symlink, a relative path, or an absolute one, and the filename is the single
+    # thing every route to it shares — which is the reasoning
+    # `calibration_labels.LIVE_DB_NAME` already encodes for `--apply`.
+    #
+    # This stays a refusal even though the connection is read-only. A guard that is advertised
+    # and does not hold is worse than no guard: it is the one somebody relies on.
+    if args.db.name == calibration_labels.LIVE_DB_NAME:
+        sys.exit(f"refusing to read {args.db}: that is the live database, copy it first.\n"
+                 f"918 rows of labels that cannot be regenerated without spending the owner's "
+                 f"Claude access on all of them again.\n"
+                 f"    cp {args.db} /tmp/cal.db && python3 calibrate.py --db /tmp/cal.db")
 
     profile = jobprofile.load(args.profile)
     master = args.resume.read_text(encoding="utf-8") if args.resume.exists() else None

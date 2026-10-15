@@ -210,3 +210,47 @@ def test_the_sweep_reports_the_shipped_values_as_its_starting_point(profile):
     merged = eh._merge(eh.DEFAULTS, profile.get("scoring") or {})
     assert res["base_values"]["off_lane_max"] == merged["weights"]["off_lane_max"]
     assert res["base_values"]["base"] == merged["base"]
+
+
+# --------------------------------------------------------------------------- the live-DB guard
+
+def test_calibrate_refuses_the_live_database_by_filename(tmp_path):
+    """
+    The guard the whole harness rests on, and it was ineffective from a worktree.
+
+    calibrate.py compared `--db` against ROOT/"jobhunt.db". In a git worktree that file does
+    not exist, so the comparison never matched the real database one directory up and
+    `--db ../../jobhunt.db` went straight through. Matching on the filename is what makes the
+    refusal hold however the file is reached — absolute, relative, or through a symlink.
+    """
+    live = tmp_path / "jobhunt.db"
+    live.write_bytes(b"")
+    with pytest.raises(SystemExit) as e:
+        calibrate.main(["--db", str(live)])
+    assert "refusing to read" in str(e.value)
+
+
+def test_calibrate_refuses_a_relative_path_to_the_live_database():
+    with pytest.raises(SystemExit) as e:
+        calibrate.main(["--db", "../../jobhunt.db"])
+    assert "refusing to read" in str(e.value)
+
+
+def test_the_refusal_names_the_copy_command_to_run_instead(tmp_path):
+    live = tmp_path / "jobhunt.db"
+    live.write_bytes(b"")
+    with pytest.raises(SystemExit) as e:
+        calibrate.main(["--db", str(live)])
+    assert "cp " in str(e.value) and "/tmp/cal.db" in str(e.value)
+
+
+def test_a_copy_under_any_other_name_is_not_refused(tmp_path):
+    """The guard must not block the measurement it exists to protect."""
+    copy = tmp_path / "cal-copy.db"
+    import store
+    with store.connect(copy) as c:
+        c.commit()
+    # Gets past the refusal and fails later, on there being no labels — not on the path.
+    with pytest.raises(SystemExit) as e:
+        calibrate.main(["--db", str(copy)])
+    assert "refusing to read" not in str(e.value)
