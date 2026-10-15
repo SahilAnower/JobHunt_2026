@@ -282,3 +282,106 @@ def test_an_unscored_row_is_not_protected(conn):
     seed(conn, "1")
     assert store.protect_labels(conn) == 0
     assert store.unprotected_scores(conn) == 0
+
+
+# ---------------------------------------------------------------- confidence in the ordering
+
+JD = ("Requirements: 3 years of experience building backend services in java and spring "
+      "boot on aws. You will own microservices end to end, work with kafka and dynamodb, "
+      "and help with system design reviews. " * 6)
+
+
+def seed_at(conn, company, req_id, score, description=None, title="Software Engineer II"):
+    """One scored, still-open, un-actioned req at a named company. Returns its key."""
+    job = {"company": company, "title": title, "req_id": req_id,
+           "url": f"https://example.test/{company}/{req_id}", "source": "greenhouse",
+           "description": description}
+    store.upsert_job(conn, job)
+    key = store.job_key(company, title, job["url"], req_id)
+    store.set_score(conn, key, score, "reason", scored_by="claude")
+    return key
+
+
+def test_a_sighted_req_outranks_an_equally_scored_blind_one(conn):
+    """
+    The ordering item 6 exists for. Both score 8, so before this the tie broke on company and
+    the blind row won on alphabet alone. "Zeta" is deliberately last alphabetically: if the
+    sighted row still comes first, the JD flag is what ordered them and not the name.
+    """
+    assert len(JD) >= 1200
+    blind = seed_at(conn, "Acme", "1", 8)
+    sighted = seed_at(conn, "Zeta", "2", 8, description=JD)
+
+    rows = store.promoted(conn, 7)
+    assert [r["key"] for r in rows] == [sighted, blind]
+
+
+def test_the_jd_flag_does_not_outrank_the_score(conn):
+    """Score is still the primary key of the ordering; confidence only breaks its ties."""
+    low_sighted = seed_at(conn, "Acme", "1", 7, description=JD)
+    high_blind = seed_at(conn, "Zeta", "2", 9)
+    assert [r["key"] for r in store.promoted(conn, 7)] == [high_blind, low_sighted]
+
+
+def test_company_still_breaks_the_remaining_tie(conn):
+    """Determinism. Two rows alike on score and on confidence must still order stably."""
+    a = seed_at(conn, "Acme", "1", 8, description=JD)
+    z = seed_at(conn, "Zeta", "2", 8, description=JD)
+    assert [r["key"] for r in store.promoted(conn, 7)] == [a, z]
+
+
+def test_promoted_exposes_the_has_jd_flag(conn):
+    seed_at(conn, "Acme", "1", 8, description=JD)
+    seed_at(conn, "Zeta", "2", 8)
+    rows = store.promoted(conn, 7)
+    assert [bool(r["has_jd"]) for r in rows] == [True, False]
+
+
+def test_a_description_below_the_minimum_counts_as_blind(conn):
+    """
+    The 700-char rule, which is the whole point of JD_MIN_CHARS living in one place. A
+    JavaScript-shell careers page yields a few hundred characters of nav and a cookie banner;
+    treating that as a JD is worse than treating it as nothing, because it looks like evidence.
+    """
+    shell = "x" * (store.JD_MIN_CHARS - 1)
+    seed_at(conn, "Acme", "1", 8, description=shell)
+    assert bool(store.promoted(conn, 7)[0]["has_jd"]) is False
+    assert store.has_jd({"description": shell}) is False
+    assert store.has_jd({"description": "x" * store.JD_MIN_CHARS}) is True
+
+
+def test_has_jd_reads_the_flag_when_the_row_carries_one(conn):
+    seed_at(conn, "Acme", "1", 8, description=JD)
+    assert store.has_jd(store.promoted(conn, 7)[0]) is True
+
+
+def test_has_jd_falls_back_to_the_description_on_a_row_from_another_query(conn):
+    # digest.py renders rows from three different queries, only one of which is promoted().
+    key = seed_at(conn, "Acme", "1", 8, description=JD)
+    plain = conn.execute("SELECT * FROM jobs WHERE key = ?", (key,)).fetchone()
+    with pytest.raises((IndexError, KeyError)):
+        plain["has_jd"]
+    assert store.has_jd(plain) is True
+
+
+def test_has_jd_treats_a_missing_description_as_blind(conn):
+    assert store.has_jd({}) is False
+    assert store.has_jd({"description": None}) is False
+
+
+def test_fetch_reads_the_same_jd_minimum_as_the_store(conn):
+    # One number, several readers. If these drift, a row can be "enriched enough" for the
+    # candidate query and still blind to the digest.
+    import fetch
+    assert fetch.JD_MIN_CHARS == store.JD_MIN_CHARS == 700
+
+
+def test_promoted_still_filters_on_the_threshold_and_the_status(conn):
+    """The ordering changed; the filters did not. This is the guard on that."""
+    keep = seed_at(conn, "Acme", "1", 7, description=JD)
+    seed_at(conn, "Acme", "2", 6, description=JD)                 # below the bar
+    acted = seed_at(conn, "Acme", "3", 9, description=JD)
+    conn.execute("UPDATE jobs SET status = 'applied' WHERE key = ?", (acted,))
+    closed = seed_at(conn, "Acme", "4", 9, description=JD)
+    conn.execute("UPDATE jobs SET still_open = 0 WHERE key = ?", (closed,))
+    assert [r["key"] for r in store.promoted(conn, 7)] == [keep]

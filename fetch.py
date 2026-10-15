@@ -975,7 +975,11 @@ def load_seed(companies_filter: set[str] | None = None) -> list[dict]:
 # is worse than feeding it nothing: it looks like information and is not.
 JD_SIGNALS = ("responsibilit", "qualification", "experience", "you will", "requirement",
               "what you", "skills", "about the role", "minimum")
-JD_MIN_CHARS = 700
+# Defined in `store` now, and re-exported under this name because enrichment, the label export
+# and the tests all reach for `fetch.JD_MIN_CHARS`. One number, three readers: the enrichment
+# candidate query, `looks_like_jd`, and the digest's blind-score marker had drifted apart
+# otherwise, and a row can then be "enriched enough" for one and blind for another.
+JD_MIN_CHARS = store.JD_MIN_CHARS
 
 
 def extract_jd(html_text: str) -> str:

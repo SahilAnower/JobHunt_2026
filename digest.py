@@ -43,6 +43,25 @@ def link(job) -> str:
     return f"[{title}]({job['url']})" if job["url"] else title
 
 
+# What a score is worth depends on what the scorer could read. 302 of 918 scored reqs have no
+# JD, and those were scored on a title, a company and a city — the heuristic's no-JD path caps
+# out around 6 and leans almost entirely on the title reading in band. A 7 from that path and a
+# 7 read off a full JD are not the same claim, so the digest says which is which rather than
+# presenting both as one number. `store.promoted` already ranks the sighted ones first.
+NO_JD_CELL = " · no JD"
+NO_JD_BULLET = " _(scored without a JD)_"
+
+
+def jd_cell(job) -> str:
+    """The marker for a table cell, empty when the scorer had a JD to read."""
+    return "" if store.has_jd(job) else NO_JD_CELL
+
+
+def jd_bullet(job) -> str:
+    """The marker for a bullet line, empty when the scorer had a JD to read."""
+    return "" if store.has_jd(job) else NO_JD_BULLET
+
+
 def build(conn, profile: dict) -> str:
     rt = jobprofile.runtime(profile)
     threshold = rt.get("score_threshold", 7)
@@ -67,7 +86,8 @@ def build(conn, profile: dict) -> str:
         for j in ready:
             d = drafted[j["key"]]
             L += [
-                f"- **{j['company']} — {link(j)}** · {j['score']}/10 · {j['geo'] or '?'}",
+                f"- **{j['company']} — {link(j)}** · {j['score']}/10 · "
+                f"{j['geo'] or '?'}{jd_cell(j)}",
                 f"  - draft: `{d['draft_path']}`",
                 f"  - warm path: {j['human_path'] or 'cold, find a human first'}",
             ]
@@ -85,11 +105,13 @@ def build(conn, profile: dict) -> str:
         for j in fresh:
             L.append(
                 f"| {j['score']} | {j['company']} | {link(j)} | "
-                f"{j['geo'] or '?'} | {j['lane'] or '?'} | {j['speed_note'] or ''} |"
+                f"{j['geo'] or '?'}{jd_cell(j)} | {j['lane'] or '?'} | "
+                f"{j['speed_note'] or ''} |"
             )
         L.append("")
         for j in fresh:
-            L.append(f"- **{j['company']} — {j['title']}**: {j['score_reason'] or ''}")
+            L.append(f"- **{j['company']} — {j['title']}**: "
+                     f"{j['score_reason'] or ''}{jd_bullet(j)}")
     else:
         L.append("_Nothing new above the bar._")
     L.append("")
@@ -146,7 +168,8 @@ def build(conn, profile: dict) -> str:
     if low_total:
         L += [f"<details><summary>Below the bar ({low_total}) — check the scorer</summary>", ""]
         for j in low:
-            L.append(f"- {j['score']}/10 {j['company']} — {j['title']}: {j['score_reason'] or ''}")
+            L.append(f"- {j['score']}/10 {j['company']} — {j['title']}: "
+                     f"{j['score_reason'] or ''}{jd_bullet(j)}")
         L += ["", "</details>", ""]
 
     # 6. the read
@@ -216,10 +239,12 @@ def build(conn, profile: dict) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stdout", action="store_true")
+    ap.add_argument("--db", type=Path, default=None,
+                    help="build the digest from this database instead of jobhunt.db")
     args = ap.parse_args()
 
     profile = jobprofile.load()
-    with store.connect() as conn:
+    with store.connect(args.db or store.DB_PATH) as conn:
         text = build(conn, profile)
         store.log_run(conn, "digest")
 

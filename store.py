@@ -28,6 +28,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "jobhunt.db"
 
+# How much description text counts as "this req has a usable JD". The single source of that
+# rule: `fetch.JD_MIN_CHARS` is assigned from this, so enrichment's candidate query, the label
+# export's `has_jd` flag and the digest's confidence marker all read the same number.
+#
+# 700 is where a JavaScript-shell careers page stops being distinguishable from a real posting
+# — a shell comes back as a few hundred characters of nav and a cookie banner. It lives here
+# rather than in fetch.py because `store` is the module everything else already imports, and
+# `fetch` imports `store` (never the reverse), so this is the only direction that does not
+# create a cycle.
+#
+# Note the scorer does NOT use it: `engine_heuristic.score_one` treats any non-empty
+# description as a JD. The two rules disagree on rows holding 1-699 characters, which the
+# digest marks as blind while the scorer scored them as sighted. Changing the scorer's split is
+# a separate piece of work; see the known gaps note in CALIBRATION.md.
+JD_MIN_CHARS = 700
+
 # Job lifecycle. Only `new` is machine-assigned; the rest you set as things happen.
 STATUSES = [
     "new",          # just fetched, not yet scored
@@ -370,16 +386,51 @@ def unscored(conn, limit: int = 50) -> list[sqlite3.Row]:
 
 
 def promoted(conn, threshold: int, since: str | None = None) -> list[sqlite3.Row]:
-    """Scored at or above the threshold and not yet acted on — the digest's main table."""
+    """
+    Scored at or above the threshold and not yet acted on — the digest's main table.
+
+    Rows carry a computed `has_jd` flag, and a sighted row outranks an equally-scored blind
+    one. That ordering is the honest one: a 7 derived from a JD and a 7 derived from a title,
+    a company and a city are not the same claim, and the second is the weaker of the two
+    because the scorer had almost nothing to read. 302 of the 918 scored rows are blind, so
+    this is not an edge case — ordering them below their sighted equals puts the reqs the
+    scorer actually had evidence for at the top of the list the owner reads first.
+
+    This changes the ORDER BY only. The threshold still decides what is promoted, no row is
+    filtered, and `company` still breaks the remaining ties so the output stays deterministic.
+    """
     sql = (
-        "SELECT * FROM jobs WHERE score >= ? AND still_open = 1 "
+        "SELECT *, (COALESCE(length(description), 0) >= ?) AS has_jd FROM jobs "
+        "WHERE score >= ? AND still_open = 1 "
         "AND status IN ('scored', 'new') "
     )
-    args: list = [threshold]
+    args: list = [JD_MIN_CHARS, threshold]
     if since:
         sql += "AND first_seen >= ? "
         args.append(since)
-    return conn.execute(sql + "ORDER BY score DESC, company", args).fetchall()
+    return conn.execute(sql + "ORDER BY score DESC, has_jd DESC, company", args).fetchall()
+
+
+def has_jd(job) -> bool:
+    """
+    Did the scorer have a JD to read for this row.
+
+    Reads the `has_jd` flag `promoted` computes when it is there and falls back to measuring
+    the description, so a caller holding a row from any other query gets the same answer. The
+    fallback matters: `digest.py` renders rows from three different queries and the marker has
+    to mean the same thing in all three.
+    """
+    try:
+        flag = job["has_jd"]
+    except (IndexError, KeyError, TypeError):
+        flag = None
+    if flag is not None:
+        return bool(flag)
+    try:
+        desc = job["description"]
+    except (IndexError, KeyError, TypeError):
+        return False
+    return len(desc or "") >= JD_MIN_CHARS
 
 
 def active(conn) -> list[sqlite3.Row]:

@@ -82,3 +82,104 @@ def test_an_empty_database_builds_a_digest(conn):
     text = digest.build(conn, PROFILE)
     assert "0 referral ask(s) out" in text
     assert text.startswith("# jobhunt digest")
+
+
+# ------------------------------------------------------------------- confidence in the digest
+
+JD = ("Requirements: 3 years of experience building backend services in java and spring "
+      "boot on aws. You will own microservices end to end, work with kafka and dynamodb, "
+      "and help with system design reviews. " * 6)
+
+
+def scored(conn, company, req_id, score, description=None, title="Software Engineer II",
+           status="scored"):
+    """One scored, still-open req at a named company. Returns its key."""
+    job = {"company": company, "title": title, "req_id": req_id,
+           "url": f"https://example.test/{company}/{req_id}", "source": "greenhouse",
+           "description": description}
+    store.upsert_job(conn, job)
+    key = store.job_key(company, title, job["url"], req_id)
+    store.set_score(conn, key, score, f"scored {score}", scored_by="claude")
+    conn.execute("UPDATE jobs SET status = ? WHERE key = ?", (status, key))
+    return key
+
+
+def test_a_blind_row_is_marked_and_a_sighted_one_is_not(conn):
+    """
+    The confidence marker. A 7 read off a full JD and a 7 read off a title, a company and a
+    city are not the same claim, and the digest is the only place the owner sees either.
+    """
+    scored(conn, "Acme", "1", 8, description=JD)
+    scored(conn, "Zeta", "2", 8)
+    text = digest.build(conn, PROFILE)
+
+    assert digest.NO_JD_CELL in text
+    assert digest.NO_JD_BULLET in text
+    # One marker in the table cell and one on the bullet, for the blind row only.
+    assert text.count(digest.NO_JD_CELL) == 1
+    assert text.count(digest.NO_JD_BULLET) == 1
+
+
+def test_the_blind_marker_lands_on_the_blind_row_and_not_its_neighbour(conn):
+    scored(conn, "Acme", "1", 8, description=JD)
+    scored(conn, "Zeta", "2", 8)
+    rows = [ln for ln in digest.build(conn, PROFILE).splitlines()
+            if ln.startswith("| 8 |")]
+    assert len(rows) == 2
+    acme = next(ln for ln in rows if "Acme" in ln)
+    zeta = next(ln for ln in rows if "Zeta" in ln)
+    assert digest.NO_JD_CELL not in acme
+    assert digest.NO_JD_CELL in zeta
+
+
+def test_the_sighted_row_is_listed_above_the_blind_one(conn):
+    """
+    The ordering, end to end through the digest rather than just through store.promoted.
+    "Zeta" sorts last, so if confidence did not order these the blind row would be first.
+    """
+    scored(conn, "Acme", "1", 8)                      # blind, sorts FIRST by company
+    scored(conn, "Zeta", "2", 8, description=JD)      # sighted, sorts last by company
+    text = digest.build(conn, PROFILE)
+    assert text.index("Zeta") < text.index("Acme")
+
+
+def test_nothing_is_marked_when_every_row_has_a_jd(conn):
+    scored(conn, "Acme", "1", 8, description=JD)
+    scored(conn, "Zeta", "2", 9, description=JD)
+    text = digest.build(conn, PROFILE)
+    assert digest.NO_JD_CELL not in text
+    assert digest.NO_JD_BULLET not in text
+
+
+def test_the_do_today_section_marks_a_blind_row(conn):
+    key = scored(conn, "Acme", "1", 8)
+    store.add_outreach(conn, job_key=key, company="Acme", kind="referral",
+                       draft_path="outbox/x.md")
+    text = digest.build(conn, PROFILE)
+    ready = next(ln for ln in text.splitlines() if "outbox/x.md" in text and "8/10" in ln)
+    assert digest.NO_JD_CELL in ready
+
+
+def test_the_below_the_bar_block_marks_a_blind_row(conn):
+    scored(conn, "Acme", "1", 4)
+    scored(conn, "Zeta", "2", 5, description=JD)
+    text = digest.build(conn, PROFILE)
+    below = [ln for ln in text.splitlines() if ln.startswith("- 4/10")]
+    assert len(below) == 1
+    assert digest.NO_JD_BULLET in below[0]
+    assert digest.NO_JD_BULLET not in next(ln for ln in text.splitlines()
+                                           if ln.startswith("- 5/10"))
+
+
+def test_the_marker_does_not_change_the_threshold_or_the_sections(conn):
+    """
+    The constraint on item 6: it surfaces confidence and changes nothing else. A blind 8 is
+    still promoted and a sighted 6 is still below the bar.
+    """
+    scored(conn, "Acme", "1", 8)
+    scored(conn, "Zeta", "2", 6, description=JD)
+    text = digest.build(conn, PROFILE)
+    assert "## Scored 7+ and not yet acted on (1)" in text
+    assert "Below the bar (1)" in text
+    for section in ("## Do today", "## In motion", "## The read"):
+        assert section in text
