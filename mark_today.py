@@ -21,6 +21,8 @@ Reqs deferred by the per-company cap are deliberately NOT included. They render 
 `- 8/10 Company — [Role](url)` without the `**`, outside the action lists, and the
 point of the cap is that they are not today's work.
 """
+from __future__ import annotations
+
 import re
 import shlex
 import sqlite3
